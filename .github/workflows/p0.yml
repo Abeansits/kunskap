@@ -8,97 +8,71 @@ on:
 permissions:
   contents: read
 
+defaults:
+  run:
+    shell: bash -euo pipefail {0}
+
 jobs:
-  shellcheck:
-    name: shellcheck bin/kunskap
+  validate:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Run shellcheck
+
+      - name: shellcheck bin/kunskap
         run: shellcheck -e SC1090,SC1091 bin/kunskap
 
-  manifest:
-    name: validate plugin.json
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Parse JSON
+      - name: parse plugin.json
         run: jq empty .claude-plugin/plugin.json
-      - name: Required + expected fields present
+
+      - name: required + expected manifest fields
         run: |
-          set -euo pipefail
-          # Per code.claude.com/docs/en/plugins-reference, only `name` is
-          # strictly required. We also assert the metadata fields P0 ships,
-          # so accidental drops surface in CI.
-          required='name version description author license'
-          for field in $required; do
+          for field in name version description author license; do
             jq -e ". | has(\"$field\")" .claude-plugin/plugin.json >/dev/null \
               || { echo "missing field: $field"; exit 1; }
           done
-          # author must be an object with a name
           jq -e '.author.name | type == "string"' .claude-plugin/plugin.json >/dev/null \
             || { echo "author.name missing or not a string"; exit 1; }
-          # name must be kebab-case-ish (lowercase, [a-z0-9-])
           name=$(jq -r .name .claude-plugin/plugin.json)
           [[ "$name" =~ ^[a-z][a-z0-9-]*$ ]] \
             || { echo "name '$name' is not kebab-case lowercase"; exit 1; }
           echo "manifest OK: $name $(jq -r .version .claude-plugin/plugin.json)"
 
-  cli-smoke:
-    name: bin/kunskap smoke
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Make executable
-        run: chmod +x bin/kunskap
-      - name: version prints expected string
+      - name: bin/kunskap is executable
+        run: test -x bin/kunskap
+
+      - name: version
         run: |
-          set -euo pipefail
           out=$(./bin/kunskap version)
           [[ "$out" == "kunskap 0.0.1" ]] || { echo "got: $out"; exit 1; }
-      - name: --version flag works
-        run: |
-          set -euo pipefail
-          out=$(./bin/kunskap --version)
-          [[ "$out" == "kunskap 0.0.1" ]] || { echo "got: $out"; exit 1; }
+
       - name: help exits 0
         run: ./bin/kunskap help >/dev/null
-      - name: whoami without identity exits non-zero
+
+      - name: whoami without identity is silent and non-zero under --quiet
         run: |
-          set +e
-          ./bin/kunskap whoami 2>/dev/null
-          rc=$?
-          set -e
-          [[ $rc -ne 0 ]] || { echo "expected non-zero exit; got $rc"; exit 1; }
-      - name: whoami --quiet without identity is silent and non-zero
-        run: |
-          set +e
-          out=$(./bin/kunskap whoami --quiet 2>&1)
-          rc=$?
-          set -e
+          rc=0; out=$(./bin/kunskap whoami --quiet 2>&1) || rc=$?
           [[ $rc -ne 0 ]] || { echo "expected non-zero exit; got $rc"; exit 1; }
           [[ -z "$out" ]] || { echo "expected silent; got: $out"; exit 1; }
-      - name: config user writes identity, whoami round-trips
+
+      - name: config user round-trips through whoami
         run: |
-          set -euo pipefail
           ./bin/kunskap config user --name ci --email ci@example.com --host runner
           out=$(./bin/kunskap whoami)
           [[ "$out" == "ci@runner" ]] || { echo "got: $out"; exit 1; }
-      - name: config show prints the identity file
+
+      - name: config show prints identity file
         run: |
-          set -euo pipefail
-          ./bin/kunskap config show | grep -q '^name  = "ci"$'
-          ./bin/kunskap config show | grep -q '^host  = "runner"$'
-      - name: config user without --host emits stderr warning (Risk #5)
+          show=$(./bin/kunskap config show)
+          echo "$show" | grep -q '^name  = "ci"$'
+          echo "$show" | grep -q '^host  = "runner"$'
+
+      - name: config user without --host emits Risk #5 warning
         run: |
-          set -euo pipefail
           stderr=$(./bin/kunskap config user --name ci 2>&1 >/dev/null)
           echo "$stderr" | grep -q "explicit --host recommended" \
             || { echo "expected Risk #5 warning; got: $stderr"; exit 1; }
+
       - name: rejects bogus --name
         run: |
-          set +e
-          ./bin/kunskap config user --name "not a slug" 2>/dev/null
-          rc=$?
-          set -e
+          rc=0; ./bin/kunskap config user --name "not a slug" 2>/dev/null || rc=$?
           [[ $rc -ne 0 ]] || { echo "expected non-zero exit; got $rc"; exit 1; }

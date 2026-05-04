@@ -1,8 +1,4 @@
 #!/usr/bin/env bash
-# kunskap — knowledge-base plugin CLI (v0.0.1, P0 scaffold)
-# Subcommands shipped at P0: version, help, config user, config show, whoami.
-# Everything else is deferred to P1+ (see docs/kunskap-design.md §Phased rollout).
-
 set -euo pipefail
 
 VERSION="0.0.1"
@@ -10,10 +6,6 @@ CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/kunskap"
 IDENTITY_FILE="$CONFIG_DIR/identity.toml"
 
 die() { echo "kunskap: $*" >&2; exit 1; }
-
-cmd_version() {
-  echo "kunskap $VERSION"
-}
 
 cmd_help() {
   cat <<EOF
@@ -34,8 +26,6 @@ Notes:
 EOF
 }
 
-# Minimal TOML emit / read for [user] table only. Values are slug-shaped
-# (no quotes, special chars, or multiline) by design — `config user` validates.
 write_identity() {
   local name="$1" email="$2" host="$3"
   mkdir -p "$CONFIG_DIR"
@@ -49,7 +39,6 @@ write_identity() {
 }
 
 read_identity_field() {
-  # $1 = field name (name|email|host). Echoes value or empty.
   local field="$1"
   [[ -f "$IDENTITY_FILE" ]] || return 1
   awk -v f="$field" '
@@ -65,7 +54,6 @@ read_identity_field() {
 }
 
 validate_slug() {
-  # $1 = label, $2 = value. Allow [a-zA-Z0-9._-], 1..64 chars.
   local label="$1" val="$2"
   [[ "$val" =~ ^[a-zA-Z0-9._-]{1,64}$ ]] \
     || die "$label must match [a-zA-Z0-9._-]{1,64}; got: $val"
@@ -88,7 +76,6 @@ cmd_config_user() {
 
   if [[ -z "$host" ]]; then
     host="$(hostname -s)"
-    validate_slug "derived host" "$host"
     echo "kunskap: host derived from \`hostname -s\` ($host); explicit --host recommended for stable role-checks (see Risk #5)." >&2
   fi
 
@@ -131,7 +118,7 @@ main() {
   local cmd="${1:-help}"
   shift || true
   case "$cmd" in
-    version|--version) cmd_version ;;
+    version|--version) echo "kunskap $VERSION" ;;
     help|--help|-h)    cmd_help ;;
     config)            cmd_config "$@" ;;
     whoami)            cmd_whoami "$@" ;;
