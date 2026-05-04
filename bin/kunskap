@@ -69,18 +69,25 @@ validate_email() {
     || die "--email must not contain quote, backslash, or newline; got: $1"
 }
 
+# Validates the value following a flag. Rejects missing, empty, and
+# `-`-prefixed values (the last would silently swallow the next flag —
+# Pass-2 bug: `--host --email <addr>` parsed host=`--email`).
+# Called outside command substitution so `die` exits the script (bash
+# quirk: var=$(die …) does NOT propagate exit under set -e).
 require_value() {
-  # require_value <flag> <argc-remaining-incl-flag>
-  [[ "$2" -ge 2 ]] || die "config user: $1 requires a value"
+  local flag="$1" next="$2"
+  [[ "$next" != "__MISSING__" ]] || die "config user: $flag requires a value"
+  [[ -n "$next" ]]                || die "config user: $flag requires a non-empty value"
+  [[ "$next" != -* ]]             || die "config user: $flag requires a value (got next flag: $next)"
 }
 
 cmd_config_user() {
   local name="" email="" host=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --name)  require_value --name  "$#"; name="$2";  shift 2 ;;
-      --email) require_value --email "$#"; email="$2"; shift 2 ;;
-      --host)  require_value --host  "$#"; host="$2";  shift 2 ;;
+      --name)  require_value --name  "${2-__MISSING__}"; name="$2";  shift 2 ;;
+      --email) require_value --email "${2-__MISSING__}"; email="$2"; shift 2 ;;
+      --host)  require_value --host  "${2-__MISSING__}"; host="$2";  shift 2 ;;
       *) die "unknown flag for \`config user\`: $1" ;;
     esac
   done
@@ -100,6 +107,7 @@ cmd_config_user() {
 }
 
 cmd_config_show() {
+  [[ $# -eq 0 ]] || die "config show: takes no arguments (got: $*)"
   [[ -f "$IDENTITY_FILE" ]] || die "no identity at $IDENTITY_FILE — run \`kunskap config user --name <slug>\`"
   cat "$IDENTITY_FILE"
 }
@@ -109,7 +117,7 @@ cmd_config() {
   shift || true
   case "$sub" in
     user) cmd_config_user "$@" ;;
-    show) cmd_config_show ;;
+    show) cmd_config_show "$@" ;;
     "")   die "config: subcommand required (user | show)" ;;
     *)    die "config: unknown subcommand: $sub" ;;
   esac
@@ -117,7 +125,11 @@ cmd_config() {
 
 cmd_whoami() {
   local quiet=false
-  [[ "${1:-}" == "--quiet" ]] && quiet=true
+  if [[ "${1:-}" == "--quiet" ]]; then
+    quiet=true
+    shift
+  fi
+  [[ $# -eq 0 ]] || die "whoami: takes no positional arguments (got: $*)"
   local name host
   if ! name="$(read_identity_field name)" || [[ -z "$name" ]]; then
     $quiet || echo "kunskap: identity not set — run \`kunskap config user --name <slug>\`" >&2

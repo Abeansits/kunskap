@@ -4,7 +4,7 @@ Knowledge-base plugin for Claude Code. Sessions write loose notes into an inbox;
 
 ## Status
 
-**v0.0.1 — P0 scaffold only.** This release ships the plugin manifest, a stub skill, a stub `/kunskap:learn` command, and `bin/kunskap` with `version` / `config user` / `whoami`. Nothing else works yet.
+**v0.0.1 — P0 scaffold only.** This release ships the plugin manifest, a stub skill, a stub `/kunskap:learn` command, and `bin/kunskap` with `version` / `config user` / `config show` / `whoami`. Nothing else works yet.
 
 The phased rollout (P0 → P6) is in [`docs/kunskap-design.md`](docs/kunskap-design.md). The MVP is P0 → P3.
 
@@ -43,7 +43,7 @@ kunskap whoami
 
 The full risk register lives in [`docs/kunskap-design.md`](docs/kunskap-design.md) §Risks. Two are operational at P0 and worth surfacing here:
 
-**Risk #5 — Identity fragility.** The identity-string `<user>@<host>` doubles as the role-assignment key from P5 onward. `hostname -s` is volatile (machine renames, OS reinstalls), and a mismatched identity-string silently breaks role checks: a curator run intended for `sebastian@laptop` won't fire if your host is now reported as `Sebastians-MacBook-Pro`. P0's mitigation is the explicit `--host` flag with a stderr warning when it's omitted; later phases add a status cross-check and a linter health-check. Set `--host` explicitly and don't change it.
+**Risk #5 — Identity fragility.** The identity-string `<user>@<host>` doubles as the role-assignment key from P5 onward. `hostname -s` is volatile (machine renames, OS reinstalls), and a mismatched identity-string silently breaks role checks: a curator run intended for `sebastian@laptop` won't fire if your host is now reported as `Sebastians-MacBook-Pro`. P0 mitigates two ways: (1) the explicit `--host` flag with a stderr warning when it's omitted, and (2) `--name` is enforced lowercase-only so `Paul`/`paul` can't both end up in `roles.toml` after Sebastian, Paul, and Matt all configure independently. Later phases add a status cross-check and a linter health-check. Set `--host` explicitly and don't change it.
 
 **Risk #8 — Vault privacy.** This plugin repo (`kunskap/`) and the eventual marketplace repo are content-free and can be public. The vault repo (`kunskap-research/`, P3) **must be private** — it carries research notes from Sebastian, Paul, Matt. Pushing the wrong remote leaks the wrong way around. Verify your vault remote before any `git push`; the P2 sync hook will refuse to push vaults whose `_meta/kunskap.toml` doesn't say `shared = true`.
 

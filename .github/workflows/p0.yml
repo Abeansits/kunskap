@@ -97,3 +97,26 @@ jobs:
           [[ $rc -ne 0 ]] || { echo "expected non-zero exit"; exit 1; }
           echo "$stderr" | grep -q "quote, backslash, or newline" \
             || { echo "expected email-quote msg; got: $stderr"; exit 1; }
+
+      - name: rejects flag-as-value (--host swallowing --email — Pass-2 block-ship)
+        run: |
+          rc=0; stderr=$(./bin/kunskap config user --name foo --host --email 2>&1 >/dev/null) || rc=$?
+          [[ $rc -ne 0 ]] || { echo "expected non-zero exit"; exit 1; }
+          echo "$stderr" | grep -q "got next flag: --email" \
+            || { echo "expected next-flag msg; got: $stderr"; exit 1; }
+
+      - name: whoami rejects unexpected positional args
+        run: |
+          rc=0; stderr=$(./bin/kunskap whoami extra 2>&1 >/dev/null) || rc=$?
+          [[ $rc -ne 0 ]] || { echo "expected non-zero exit"; exit 1; }
+          echo "$stderr" | grep -q "no positional arguments" \
+            || { echo "expected positional msg; got: $stderr"; exit 1; }
+          rc=0; stderr=$(./bin/kunskap whoami --quiet extra 2>&1 >/dev/null) || rc=$?
+          [[ $rc -ne 0 ]] || { echo "expected non-zero exit on --quiet+extra"; exit 1; }
+
+      - name: config show rejects unexpected args
+        run: |
+          rc=0; stderr=$(./bin/kunskap config show extra 2>&1 >/dev/null) || rc=$?
+          [[ $rc -ne 0 ]] || { echo "expected non-zero exit"; exit 1; }
+          echo "$stderr" | grep -q "takes no arguments" \
+            || { echo "expected no-args msg; got: $stderr"; exit 1; }
