@@ -1,0 +1,142 @@
+#!/usr/bin/env bash
+# kunskap — knowledge-base plugin CLI (v0.0.1, P0 scaffold)
+# Subcommands shipped at P0: version, help, config user, config show, whoami.
+# Everything else is deferred to P1+ (see docs/kunskap-design.md §Phased rollout).
+
+set -euo pipefail
+
+VERSION="0.0.1"
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/kunskap"
+IDENTITY_FILE="$CONFIG_DIR/identity.toml"
+
+die() { echo "kunskap: $*" >&2; exit 1; }
+
+cmd_version() {
+  echo "kunskap $VERSION"
+}
+
+cmd_help() {
+  cat <<EOF
+kunskap $VERSION — knowledge-base plugin
+
+Usage:
+  kunskap version | --version
+  kunskap help    | --help
+  kunskap config user --name <slug> [--email <addr>] [--host <host>]
+  kunskap config show
+  kunskap whoami [--quiet]
+
+Notes:
+  --host is recommended on \`config user\`. Without it, host derives from
+  \`hostname -s\` which mutates on machine renames and silently breaks role
+  checks at P5. See docs/kunskap-design.md §Q5 (Identity bootstrapping)
+  and Risk #5 (Identity fragility).
+EOF
+}
+
+# Minimal TOML emit / read for [user] table only. Values are slug-shaped
+# (no quotes, special chars, or multiline) by design — `config user` validates.
+write_identity() {
+  local name="$1" email="$2" host="$3"
+  mkdir -p "$CONFIG_DIR"
+  {
+    echo "# kunskap identity — written by \`kunskap config user\`. Edit by hand if needed."
+    echo "[user]"
+    echo "name  = \"$name\""
+    [[ -n "$email" ]] && echo "email = \"$email\""
+    echo "host  = \"$host\""
+  } > "$IDENTITY_FILE"
+}
+
+read_identity_field() {
+  # $1 = field name (name|email|host). Echoes value or empty.
+  local field="$1"
+  [[ -f "$IDENTITY_FILE" ]] || return 1
+  awk -v f="$field" '
+    /^\[user\]/ { in_user = 1; next }
+    /^\[/       { in_user = 0; next }
+    in_user && $1 == f {
+      sub(/^[^=]*=[[:space:]]*"/, "")
+      sub(/"[[:space:]]*$/, "")
+      print
+      exit
+    }
+  ' "$IDENTITY_FILE"
+}
+
+validate_slug() {
+  # $1 = label, $2 = value. Allow [a-zA-Z0-9._-], 1..64 chars.
+  local label="$1" val="$2"
+  [[ "$val" =~ ^[a-zA-Z0-9._-]{1,64}$ ]] \
+    || die "$label must match [a-zA-Z0-9._-]{1,64}; got: $val"
+}
+
+cmd_config_user() {
+  local name="" email="" host=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --name)  name="${2:-}";  shift 2 ;;
+      --email) email="${2:-}"; shift 2 ;;
+      --host)  host="${2:-}";  shift 2 ;;
+      *) die "unknown flag for \`config user\`: $1" ;;
+    esac
+  done
+
+  [[ -n "$name" ]] || die "config user: --name <slug> is required"
+  validate_slug "--name" "$name"
+  [[ -z "$host" ]] || validate_slug "--host" "$host"
+
+  if [[ -z "$host" ]]; then
+    host="$(hostname -s)"
+    validate_slug "derived host" "$host"
+    echo "kunskap: host derived from \`hostname -s\` ($host); explicit --host recommended for stable role-checks (see Risk #5)." >&2
+  fi
+
+  write_identity "$name" "$email" "$host"
+  echo "kunskap: identity written to $IDENTITY_FILE ($name@$host)"
+}
+
+cmd_config_show() {
+  [[ -f "$IDENTITY_FILE" ]] || die "no identity at $IDENTITY_FILE — run \`kunskap config user --name <slug>\`"
+  cat "$IDENTITY_FILE"
+}
+
+cmd_config() {
+  local sub="${1:-}"
+  shift || true
+  case "$sub" in
+    user) cmd_config_user "$@" ;;
+    show) cmd_config_show ;;
+    "")   die "config: subcommand required (user | show)" ;;
+    *)    die "config: unknown subcommand: $sub" ;;
+  esac
+}
+
+cmd_whoami() {
+  local quiet=false
+  [[ "${1:-}" == "--quiet" ]] && quiet=true
+  local name host
+  if ! name="$(read_identity_field name)" || [[ -z "$name" ]]; then
+    $quiet || echo "kunskap: identity not set — run \`kunskap config user --name <slug>\`" >&2
+    exit 1
+  fi
+  if ! host="$(read_identity_field host)" || [[ -z "$host" ]]; then
+    $quiet || echo "kunskap: identity missing host — re-run \`kunskap config user\`" >&2
+    exit 1
+  fi
+  $quiet || echo "$name@$host"
+}
+
+main() {
+  local cmd="${1:-help}"
+  shift || true
+  case "$cmd" in
+    version|--version) cmd_version ;;
+    help|--help|-h)    cmd_help ;;
+    config)            cmd_config "$@" ;;
+    whoami)            cmd_whoami "$@" ;;
+    *) die "unknown subcommand: $cmd (try \`kunskap help\`)" ;;
+  esac
+}
+
+main "$@"
