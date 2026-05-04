@@ -8,29 +8,27 @@ Knowledge-base plugin for Claude Code. Sessions write loose notes into an inbox;
 
 The phased rollout (P0 → P6) is in [`docs/kunskap-design.md`](docs/kunskap-design.md). The MVP is P0 → P3.
 
-## Install (manual; marketplace at P6)
+## Install (development; marketplace at P6)
 
-The Anthropic plugin marketplace path lands at P6. Until then, manual install:
-
-```bash
-git clone https://github.com/Abeansits/kunskap ~/.claude/plugins/cache/local/kunskap
-# inside Claude Code:
-/plugin enable kunskap
-```
-
-For local plugin development:
+The Anthropic plugin marketplace path lands at P6. Until then, the canonical
+local-dev path:
 
 ```bash
+git clone https://github.com/Abeansits/kunskap ~/Developer/kunskap
 claude --plugin-dir ~/Developer/kunskap
 ```
+
+`bin/kunskap` is on the Bash tool's PATH whenever the plugin is loaded.
 
 ## Configure your identity (the one functional thing P0 ships)
 
 Per machine, run once:
 
 ```bash
-kunskap config user --name <yourslug> --email <you@example.com> --host <stable-host-name>
+kunskap config user --name <yourslug-lowercase> --email <you@example.com> --host <stable-host-name>
 ```
+
+`--name` is lowercase-only to pre-empt `Paul`-vs-`paul` collisions in the P5 role check.
 
 Writes `~/.config/kunskap/identity.toml`. Verify:
 

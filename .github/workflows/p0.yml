@@ -76,3 +76,24 @@ jobs:
         run: |
           rc=0; ./bin/kunskap config user --name "not a slug" 2>/dev/null || rc=$?
           [[ $rc -ne 0 ]] || { echo "expected non-zero exit; got $rc"; exit 1; }
+
+      - name: rejects uppercase --name (Paul/paul collision pre-empt)
+        run: |
+          rc=0; stderr=$(./bin/kunskap config user --name Paul --host runner 2>&1 >/dev/null) || rc=$?
+          [[ $rc -ne 0 ]] || { echo "expected non-zero exit"; exit 1; }
+          echo "$stderr" | grep -q "lowercase" \
+            || { echo "expected lowercase msg; got: $stderr"; exit 1; }
+
+      - name: --name missing value gives a helpful error (not silent set -e)
+        run: |
+          rc=0; stderr=$(./bin/kunskap config user --name 2>&1 >/dev/null) || rc=$?
+          [[ $rc -ne 0 ]] || { echo "expected non-zero exit"; exit 1; }
+          echo "$stderr" | grep -q "requires a value" \
+            || { echo "expected 'requires a value' msg; got: $stderr"; exit 1; }
+
+      - name: rejects --email containing quotes (TOML integrity)
+        run: |
+          rc=0; stderr=$(./bin/kunskap config user --name ci --host runner --email 'a"b@x' 2>&1 >/dev/null) || rc=$?
+          [[ $rc -ne 0 ]] || { echo "expected non-zero exit"; exit 1; }
+          echo "$stderr" | grep -q "quote, backslash, or newline" \
+            || { echo "expected email-quote msg; got: $stderr"; exit 1; }
