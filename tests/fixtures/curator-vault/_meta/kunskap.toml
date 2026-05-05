@@ -1,0 +1,9 @@
+[vault]
+name = "fixture-curator-vault"
+created = "2026-05-01"
+shared = false
+schema_version = 1
+
+[wiki]
+default_lane = "learnings"
+draft_review = "human"

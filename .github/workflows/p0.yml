@@ -40,10 +40,12 @@ jobs:
       - name: bin/kunskap is executable
         run: test -x bin/kunskap
 
-      - name: version
+      - name: version (matches plugin.json)
         run: |
+          manifest=$(jq -r .version .claude-plugin/plugin.json)
           out=$(./bin/kunskap version)
-          [[ "$out" == "kunskap 0.0.1" ]] || { echo "got: $out"; exit 1; }
+          [[ "$out" == "kunskap $manifest" ]] \
+            || { echo "drift: bin says '$out', plugin.json says '$manifest'"; exit 1; }
 
       - name: help exits 0
         run: ./bin/kunskap help >/dev/null
