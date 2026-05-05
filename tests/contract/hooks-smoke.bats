@@ -121,12 +121,23 @@ EOF
   [[ -z "$output" ]]
 }
 
-@test "session-end: marker but no identity → exit 0 silent (no commit under unknown identity)" {
+@test "session-end: marker but no identity → exit 0 with friendly stderr (matches session-start)" {
   vault="$(mktemp -d)"
   write_marker "$vault"
   run "$SESSION_END"
   rm -rf "$vault"
   [[ "$status" -eq 0 ]]
+  [[ "$output" == *"identity not set"* ]]
+}
+
+@test "session-end: identity set but vault missing on disk → exit 0 + stderr" {
+  vault="$(mktemp -d)"
+  write_marker "$vault"
+  rm -rf "$vault"
+  set_identity
+  run "$SESSION_END"
+  [[ "$status" -eq 0 ]]
+  [[ "$output" == *"vault path missing"* || "$output" == *"marker malformed"* ]]
 }
 
 @test "session-end: solo vault (shared=false) → exit 0 quiet, no commit attempted" {

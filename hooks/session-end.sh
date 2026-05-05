@@ -14,10 +14,19 @@ PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-}"
 # shellcheck source=hooks/_shared.sh
 . "$PLUGIN_ROOT/hooks/_shared.sh"
 
-kunskap_marker_path >/dev/null    || exit 0
-who="$(kunskap_identity_set)"     || exit 0
-vault="$(kunskap_resolve_vault)"  || exit 0
-kunskap_is_shared "$vault"        || exit 0
+kunskap_marker_path >/dev/null || exit 0
+
+if ! who="$(kunskap_identity_set)"; then
+  echo "Kunskap: identity not set; run \`kunskap config user --name <slug> --host <host>\`" >&2
+  exit 0
+fi
+
+vault="$(kunskap_resolve_vault)" || {
+  echo "Kunskap: vault path missing or marker malformed; skipping commit" >&2
+  exit 0
+}
+
+kunskap_is_shared "$vault" || exit 0
 
 session_id="unknown"
 if [[ ! -t 0 ]]; then
