@@ -1,0 +1,5 @@
+[roles.curator]
+primary = "fixture@bats"
+
+[roles.linter]
+primary = "fixture@bats"

@@ -4,7 +4,7 @@ Knowledge-base plugin for Claude Code. Sessions write loose notes into an inbox;
 
 ## Status
 
-**v0.0.1 — P0 scaffold only.** This release ships the plugin manifest, a stub skill, a stub `/kunskap:learn` command, and `bin/kunskap` with `version` / `config user` / `config show` / `whoami`. Nothing else works yet.
+**v0.1.0 — P1 curator agent + manual trigger + tests.** Adds the librarian agent (`agents/curator.md`), the `/kunskap:curate` slash command, headless `bin/kunskap curate --vault <path>`, plus `link-stubs` / `audit-coverage` CLI primitives and a fixture-based contract test suite. P0's stub `/kunskap:learn` and `kunskap-vault` skill remain stubs until P2 / P3.
 
 The phased rollout (P0 → P6) is in [`docs/kunskap-design.md`](docs/kunskap-design.md). The MVP is P0 → P3.
 
