@@ -5,7 +5,7 @@
 load helpers
 
 setup() {
-  TMPXDG="$(mktemp -d -t kunskap-xdg.XXXXXX)"
+  TMPXDG="$(make_temp_xdg)"
   export TMPXDG
   export XDG_CONFIG_HOME="$TMPXDG"
 }

@@ -78,7 +78,6 @@ jobs:
           jq -e '.author.name | type == "string"'                            .claude-plugin/plugin.json
           jq -e '.repository | type == "string"'                             .claude-plugin/plugin.json
           jq -e '.keywords | type == "array" and all(type == "string")'      .claude-plugin/plugin.json
-          # Reject fields that aren't in the documented manifest schema.
           jq -e '
             [keys[]] - ["$schema","name","version","description","author","repository","license","homepage","keywords"]
             | length == 0
@@ -102,7 +101,8 @@ jobs:
 
       # ---------- bats suites (counts derived dynamically — no drifty strings) ----------
 
-      - name: list test counts (informational, no hardcoded numbers)
+      # P1 §7: counts get printed dynamically; never encoded in step names.
+      - name: list test counts
         run: |
           for f in tests/contract/*.bats; do
             n=$(grep -c '^@test ' "$f")

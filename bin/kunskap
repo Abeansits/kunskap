@@ -5,7 +5,6 @@ VERSION="0.2.0"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/kunskap"
 IDENTITY_FILE="$CONFIG_DIR/identity.toml"
 
-# Global state set by the pre-dispatch parser in main().
 GLOBAL_VAULT=""
 
 die() { echo "kunskap: $*" >&2; exit 1; }
@@ -87,9 +86,7 @@ write_identity() {
   } > "$IDENTITY_FILE"
 }
 
-# Read a single TOML field from <section>.<field>. Hand-rolled regex parser —
-# tolerates `key = "value"` and bare `key = value` forms, ignores comments,
-# returns the raw value or empty string. Full TOML compliance is P5's job.
+# Minimal TOML reader for `<section>.<field>`. Full compliance is P5's job.
 read_toml_field() {
   local file="$1" section="$2" field="$3"
   [[ -f "$file" ]] || return 1
@@ -228,8 +225,6 @@ cmd_whoami() {
   $quiet || echo "$name@$host"
 }
 
-# Project root is whatever Claude Code told us (CLAUDE_PROJECT_DIR), or, when
-# the user invokes the CLI directly, the current working directory.
 project_dir() {
   printf '%s\n' "${CLAUDE_PROJECT_DIR:-$PWD}"
 }
@@ -300,11 +295,9 @@ cmd_learn_disable() {
   echo "kunskap: disabled in $proj (removed $marker)"
 }
 
-# Days between two ISO-8601 dates (UTC, day precision). Pure-shell so we don't
-# depend on GNU date or BSD date flag-shape differences.
+# Pure-shell to bridge GNU/BSD date flag differences.
 days_since() {
   local iso="$1" now_epoch then_epoch
-  # Strip the time portion; keep YYYY-MM-DD.
   iso="${iso:0:10}"
   [[ "$iso" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || { echo "?"; return; }
   now_epoch=$(date -u +%s)
@@ -646,10 +639,9 @@ cmd_audit_coverage() {
 }
 
 main() {
-  # Pre-dispatch global flags. Currently just `--vault` for `config get`.
-  # Consumed only when they precede the first non-flag token; subcommand-local
-  # `--vault` flags (`curate --vault X`, `learn enable --vault X`) are still
-  # parsed inside their subcommand.
+  # Pre-dispatch globals are consumed only when they precede the first
+  # non-flag token; subcommand-local `--vault` (curate, learn enable) is
+  # still parsed inside the subcommand.
   while [[ $# -gt 0 && "$1" == --vault ]]; do
     require_value --vault "${2-__MISSING__}"
     GLOBAL_VAULT="$2"

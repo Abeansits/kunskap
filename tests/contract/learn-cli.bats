@@ -8,8 +8,8 @@
 load helpers
 
 setup() {
-  TMPPROJ="$(mktemp -d -t kunskap-proj.XXXXXX)"
-  TMPXDG="$(mktemp -d -t kunskap-xdg.XXXXXX)"
+  TMPPROJ="$(make_temp_proj)"
+  TMPXDG="$(make_temp_xdg)"
   export TMPPROJ TMPXDG
   export XDG_CONFIG_HOME="$TMPXDG"
 }

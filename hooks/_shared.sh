@@ -5,15 +5,13 @@
 # but never aborts the calling shell. Callers exit 0 with a stderr message
 # on any failure — closing your laptop must not be blocked by a flaky vault.
 
-# Resolve the kunskap binary inside this plugin. CLAUDE_PLUGIN_ROOT is set by
-# Claude Code before each hook fires; tests must export it themselves.
+# Tests must export CLAUDE_PLUGIN_ROOT themselves; Claude Code injects it.
 kunskap_bin() {
   local root="${CLAUDE_PLUGIN_ROOT:-}"
   [[ -n "$root" && -x "$root/bin/kunskap" ]] || return 1
   printf '%s\n' "$root/bin/kunskap"
 }
 
-# Echo the project's opt-in marker path, or return non-zero if not opted in.
 kunskap_marker_path() {
   local proj="${CLAUDE_PROJECT_DIR:-}"
   [[ -n "$proj" ]] || return 1
@@ -22,8 +20,6 @@ kunskap_marker_path() {
   printf '%s\n' "$marker"
 }
 
-# Echo the vault path declared by the marker. Returns 1 when the marker is
-# missing, malformed, or points at a non-existent directory.
 kunskap_resolve_vault() {
   local marker vault
   marker="$(kunskap_marker_path)" || return 1
@@ -32,9 +28,9 @@ kunskap_resolve_vault() {
   printf '%s\n' "$vault"
 }
 
-# True iff the vault config declares shared = true. Pre-init vaults (no
-# _meta/kunskap.toml yet) read as not-shared, by design — `kunskap config get`
-# returns "false" for missing files.
+# Pre-init vaults (no _meta/kunskap.toml yet) read as not-shared by design —
+# `kunskap config get shared` returns "false" for missing files. Hooks rely
+# on this to skip pull/push cleanly until P3 ships `kunskap init`.
 kunskap_is_shared() {
   local vault="${1:-}"
   [[ -n "$vault" ]] || return 1
@@ -44,9 +40,11 @@ kunskap_is_shared() {
   [[ "$val" == "true" ]]
 }
 
-# True iff identity is set (`kunskap whoami --quiet` exits 0).
+# Echo the identity-string (`<name>@<host>`) on success, return 1 if unset.
+# Callers like session-end use the returned value in commit messages, saving
+# a second whoami fork.
 kunskap_identity_set() {
   local bin
   bin="$(kunskap_bin)" || return 1
-  "$bin" whoami --quiet 2>/dev/null
+  "$bin" whoami 2>/dev/null
 }

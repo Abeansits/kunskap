@@ -10,13 +10,16 @@ SESSION_START="$REPO_ROOT/hooks/session-start.sh"
 SESSION_END="$REPO_ROOT/hooks/session-end.sh"
 
 setup() {
-  TMPPROJ="$(mktemp -d -t kunskap-proj.XXXXXX)"
-  TMPXDG="$(mktemp -d -t kunskap-xdg.XXXXXX)"
+  TMPPROJ="$(make_temp_proj)"
+  TMPXDG="$(make_temp_xdg)"
   export TMPPROJ TMPXDG
   export XDG_CONFIG_HOME="$TMPXDG"
   export CLAUDE_PLUGIN_ROOT="$REPO_ROOT"
   export CLAUDE_PROJECT_DIR="$TMPPROJ"
 }
+
+# Bypass the `kunskap config user` fork — write identity.toml directly.
+set_identity() { write_identity_toml "$TMPXDG"; }
 
 teardown() {
   [[ -n "${TMPPROJ:-}" && -d "$TMPPROJ" ]] && rm -rf "$TMPPROJ"
@@ -68,7 +71,7 @@ EOF
   vault="$(mktemp -d)"
   write_marker "$vault"
   rm -rf "$vault"
-  "$KUNSKAP_BIN" config user --name ci --host runner >/dev/null 2>&1
+  set_identity
   run "$SESSION_START"
   [[ "$status" -eq 0 ]]
   [[ "$output" == *"vault path missing"* || "$output" == *"marker malformed"* ]]
@@ -77,7 +80,7 @@ EOF
 @test "session-start: vault exists but _meta/kunskap.toml missing → exit 0 quiet (treated as not-shared)" {
   vault="$(mktemp -d)"
   write_marker "$vault"
-  "$KUNSKAP_BIN" config user --name ci --host runner >/dev/null 2>&1
+  set_identity
   run "$SESSION_START"
   rm -rf "$vault"
   [[ "$status" -eq 0 ]]
@@ -92,7 +95,7 @@ EOF
 shared = false
 EOF
   write_marker "$vault"
-  "$KUNSKAP_BIN" config user --name ci --host runner >/dev/null 2>&1
+  set_identity
   run "$SESSION_START"
   rm -rf "$vault"
   [[ "$status" -eq 0 ]]
@@ -103,7 +106,7 @@ EOF
   vault="$(mktemp -d -t shared-vault.XXXXXX)"
   make_shared_vault "$vault"   # no remote
   write_marker "$vault"
-  "$KUNSKAP_BIN" config user --name ci --host runner >/dev/null 2>&1
+  set_identity
   run "$SESSION_START"
   rm -rf "$vault"
   [[ "$status" -eq 0 ]]
@@ -135,7 +138,7 @@ shared = false
 EOF
   ( cd "$vault" && git init -q && git config user.email s@b && git config user.name s )
   write_marker "$vault"
-  "$KUNSKAP_BIN" config user --name ci --host runner >/dev/null 2>&1
+  set_identity
   run "$SESSION_END"
   rm -rf "$vault"
   [[ "$status" -eq 0 ]]
@@ -146,7 +149,7 @@ EOF
   vault="$(mktemp -d -t shared-vault.XXXXXX)"
   make_shared_vault "$vault"
   write_marker "$vault"
-  "$KUNSKAP_BIN" config user --name ci --host runner >/dev/null 2>&1
+  set_identity
   run "$SESSION_END"
   rm -rf "$vault"
   [[ "$status" -eq 0 ]]
@@ -157,7 +160,7 @@ EOF
   vault="$(mktemp -d -t shared-vault.XXXXXX)"
   make_shared_vault "$vault"
   write_marker "$vault"
-  "$KUNSKAP_BIN" config user --name ci --host runner >/dev/null 2>&1
+  set_identity
   echo "new note" > "$vault/raw/inbox/new-note-2026-05-05.md"
   # No remote → push fails; commit must still land + script exits 0.
   run bash -c "echo '{\"session_id\": \"smoke-test-id\"}' | '$SESSION_END'"
@@ -171,7 +174,7 @@ EOF
   vault="$(mktemp -d -t shared-vault.XXXXXX)"
   make_shared_vault "$vault"
   write_marker "$vault"
-  "$KUNSKAP_BIN" config user --name ci --host runner >/dev/null 2>&1
+  set_identity
   echo "new note" > "$vault/raw/inbox/another-note-2026-05-05.md"
   run bash -c "echo 'not json at all' | '$SESSION_END'"
   [[ "$status" -eq 0 ]]

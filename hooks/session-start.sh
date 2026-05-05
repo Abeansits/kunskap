@@ -16,25 +16,21 @@ PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-}"
 # shellcheck source=hooks/_shared.sh
 . "$PLUGIN_ROOT/hooks/_shared.sh"
 
-# 1. Opt-in gate. No marker → not configured for this project.
 kunskap_marker_path >/dev/null || exit 0
 
-# 2. Identity required. Missing identity = no commits under "unknown".
-if ! kunskap_identity_set; then
+# Missing identity would commit under "unknown" — refuse instead.
+if ! kunskap_identity_set >/dev/null; then
   echo "Kunskap: identity not set; run \`kunskap config user --name <slug> --host <host>\`" >&2
   exit 0
 fi
 
-# 3. Resolve vault.
 vault="$(kunskap_resolve_vault)" || {
   echo "Kunskap: vault path missing or marker malformed; skipping pull" >&2
   exit 0
 }
 
-# 4. Skip pull on solo (or pre-init) vaults.
 kunskap_is_shared "$vault" || exit 0
 
-# 5. git pull --rebase --autostash. Fail-soft on network/conflict.
 ( cd "$vault" && git pull --rebase --autostash --quiet ) \
   || echo "Kunskap: vault pull failed; continuing with local copy" >&2
 

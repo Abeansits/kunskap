@@ -14,12 +14,11 @@ PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-}"
 # shellcheck source=hooks/_shared.sh
 . "$PLUGIN_ROOT/hooks/_shared.sh"
 
-kunskap_marker_path >/dev/null   || exit 0
-kunskap_identity_set             || exit 0
-vault="$(kunskap_resolve_vault)" || exit 0
-kunskap_is_shared "$vault"       || exit 0
+kunskap_marker_path >/dev/null    || exit 0
+who="$(kunskap_identity_set)"     || exit 0
+vault="$(kunskap_resolve_vault)"  || exit 0
+kunskap_is_shared "$vault"        || exit 0
 
-# Pull session_id from stdin JSON, fall back to "unknown".
 session_id="unknown"
 if [[ ! -t 0 ]]; then
   hook_input="$(cat 2>/dev/null || true)"
@@ -28,9 +27,6 @@ if [[ ! -t 0 ]]; then
     [[ -n "$parsed" ]] && session_id="$parsed"
   fi
 fi
-
-bin="$(kunskap_bin)" || exit 0
-who="$("$bin" whoami 2>/dev/null || echo unknown)"
 
 cd "$vault" || {
   echo "Kunskap: cannot cd to vault $vault; skipping push" >&2
@@ -42,7 +38,6 @@ git add raw/inbox 2>/dev/null || {
   exit 0
 }
 
-# Nothing changed → no commit, no push.
 git diff --cached --quiet 2>/dev/null && exit 0
 
 git commit --quiet -m "kunskap: inbox capture from session ${session_id} (${who})" \
