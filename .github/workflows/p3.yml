@@ -72,7 +72,14 @@ jobs:
             templates/vault-init/Archives/processed-drafts/approved \
             templates/vault-init/Archives/processed-drafts/rejected; do
             [[ -d "$d" ]] || { echo "missing template dir: $d"; exit 1; }
-            [[ -f "$d/.gitkeep" ]] || { echo "missing $d/.gitkeep (dir wouldn't survive git)"; exit 1; }
+            # Empty dirs need .gitkeep to survive git, but a dir that ships
+            # other tracked content (e.g. wiki/bases/*.base from P6) doesn't
+            # need one — accept either.
+            tracked_count=$(find "$d" -type f -not -name '.gitkeep' | wc -l)
+            if [[ "$tracked_count" -eq 0 && ! -f "$d/.gitkeep" ]]; then
+              echo "missing $d/.gitkeep (empty dir wouldn't survive git)"
+              exit 1
+            fi
           done
 
       - name: templates carry the substitution placeholders init expects

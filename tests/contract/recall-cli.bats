@@ -253,7 +253,17 @@ EOF
 
 @test "recall errors clearly when rg is missing" {
   TMPVAULT="$(make_temp_vault)"
-  run env PATH="/usr/bin:/bin" "$KUNSKAP_BIN" recall foo --vault "$TMPVAULT"
+  # Build an isolated bin dir with bash + env + jq (kunskap's prerequisites
+  # for the early code path) but NOT rg. Different distros put rg in
+  # different locations (macOS: /opt/homebrew/bin, Ubuntu: /usr/bin), so a
+  # naive PATH=/usr/bin:/bin doesn't strip rg on Ubuntu CI.
+  fake_bin="$(mktemp -d -t kunskap-norg.XXXXXX)"
+  for tool in bash env jq awk grep sed git; do
+    p="$(command -v "$tool")"
+    [[ -n "$p" ]] && ln -s "$p" "$fake_bin/$tool"
+  done
+  run env PATH="$fake_bin" "$KUNSKAP_BIN" recall foo --vault "$TMPVAULT"
+  rm -rf "$fake_bin"
   [[ "$status" -ne 0 ]]
   [[ "$output" == *"\`rg\` not on PATH"* ]]
 }
