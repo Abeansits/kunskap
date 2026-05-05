@@ -84,10 +84,7 @@ teardown_file() {
 
 @test "curate dies with a clear error when the agent file is missing" {
   fake_root="$(mktemp -d)"
-  mkdir -p "$fake_root/bin"
-  cp "$KUNSKAP_BIN" "$fake_root/bin/kunskap"
-  PATH="/usr/bin:/bin" CLAUDE_PLUGIN_ROOT="$fake_root" \
-    run "$fake_root/bin/kunskap" curate --vault "$TMPVAULT"
+  CLAUDE_PLUGIN_ROOT="$fake_root" run "$KUNSKAP_BIN" curate --vault "$TMPVAULT"
   rm -rf "$fake_root"
   [[ "$status" -ne 0 ]]
   [[ "$output" == *"curator agent not found"* ]]

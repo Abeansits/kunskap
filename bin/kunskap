@@ -189,12 +189,11 @@ cmd_curate() {
   validate_vault "$vault"
   $check && { echo "kunskap: vault $vault looks healthy"; return 0; }
 
-  command -v claude >/dev/null || die "curate: \`claude\` not on PATH; install Claude Code first"
-
   local root prompt
   root="$(plugin_root)"
   [[ -f "$root/agents/curator.md" ]] \
     || die "curate: curator agent not found at $root/agents/curator.md (plugin_root resolved to $root; set CLAUDE_PLUGIN_ROOT to override)"
+  command -v claude >/dev/null || die "curate: \`claude\` not on PATH; install Claude Code first"
   prompt="You have one task: invoke the \`curator\` subagent (defined in this plugin's agents/curator.md) via the Agent tool, passing this exact string as its ARGUMENTS:
 
 $vault
