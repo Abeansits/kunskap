@@ -4,7 +4,7 @@ Knowledge-base plugin for Claude Code. Sessions write loose notes into an inbox;
 
 ## Status
 
-**v0.1.0 — P1 curator agent + manual trigger + tests.** Adds the librarian agent (`agents/curator.md`), the `/kunskap:curate` slash command, headless `bin/kunskap curate --vault <path>`, plus `link-stubs` / `audit-coverage` CLI primitives and a fixture-based contract test suite. P0's stub `/kunskap:learn` and `kunskap-vault` skill remain stubs until P2 / P3.
+**v0.3.0 — P3 vault bootstrap + drafts surface.** Adds `kunskap init <path>` (full `templates/vault-init/` scaffold), `commands/drafts.md` + `bin/kunskap drafts list | show | approve | reject | defer` (port of the conductor `/drafts` surface), and locks the `_drafts/<topic-slug>--<iso-date>.md` naming convention in the curator prompt. P0 → P3 is the MVP.
 
 The phased rollout (P0 → P6) is in [`docs/kunskap-design.md`](docs/kunskap-design.md). The MVP is P0 → P3.
 
@@ -38,6 +38,31 @@ kunskap whoami
 ```
 
 **Pass `--host` explicitly** rather than letting the CLI derive it from `hostname -s`. Hostnames mutate when machines get renamed, and a mismatched identity-string silently breaks the role checks that arrive at P5. The CLI prints a stderr warning when `--host` is omitted.
+
+## Bootstrap a vault (P3)
+
+```bash
+# Solo vault (no remote, never pushes):
+kunskap init ~/Developer/my-vault --name "My Vault"
+
+# Shared vault (sets shared = true, adds origin):
+kunskap init ~/Developer/team-vault --name "Team Vault" \
+  --shared git@github.com:org/team-vault.git
+```
+
+`init` scaffolds the full vault layout, seeds neutral example notes (so a fresh vault passes `kunskap audit-coverage` and is immediately runnable by the curator), and prints a "next steps" panel. It does NOT auto-commit — review with `git status` before your seed commit. Re-running on an existing non-empty target requires `--force` (with interactive confirmation; pass `--yes` or set `KUNSKAP_AUTO_CONFIRM=1` in scripts).
+
+After the curator routes drafts to `wiki/_drafts/`, triage them with:
+
+```bash
+/kunskap:drafts list
+/kunskap:drafts show <id>
+/kunskap:drafts approve <id> [--into <article-slug>]
+/kunskap:drafts reject  <id> --reason "<why>"
+/kunskap:drafts defer   <id>
+```
+
+Each action commits inside the vault. `reject` requires `--reason` — rejection without a reason loses the context that future humans need.
 
 ## Risks at v0.0.1
 

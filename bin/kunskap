@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="0.2.0"
+VERSION="0.3.0"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/kunskap"
 IDENTITY_FILE="$CONFIG_DIR/identity.toml"
 
@@ -45,10 +45,16 @@ Usage:
   kunskap config show
   kunskap [--vault <abs-path>] config get <key>
   kunskap whoami [--quiet]
+  kunskap init <path> [--shared <git-remote>] [--name <human-readable>] [--force] [--yes]
   kunskap learn enable --vault <abs-path> [--yes]
   kunskap learn disable
   kunskap learn status
   kunskap curate --vault <abs-path> [--check]
+  kunskap drafts list   [--vault <abs-path>] [--format text|json]
+  kunskap drafts show   <id-or-slug> [--vault <abs-path>]
+  kunskap drafts approve <id-or-slug> [--into <article-slug>] [--vault <abs-path>]
+  kunskap drafts reject  <id-or-slug> --reason "<why>" [--vault <abs-path>]
+  kunskap drafts defer   <id-or-slug> [--vault <abs-path>]
   kunskap link-stubs --vault <abs-path> [--format text|json]
   kunskap audit-coverage --vault <abs-path> [--format text|json]
 
@@ -57,6 +63,12 @@ Notes:
   \`hostname -s\` which mutates on machine renames and silently breaks role
   checks at P5. See docs/kunskap-design.md §Q5 (Identity bootstrapping)
   and Risk #5 (Identity fragility).
+
+  \`init\` scaffolds a Kunskap vault at <path>. Without --shared the vault
+  is solo (\`shared = false\` in _meta/kunskap.toml; SessionEnd never pushes).
+  With --shared <remote>, sets \`shared = true\` and adds origin. Existing
+  non-empty target requires --force (and interactive confirm unless --yes
+  or KUNSKAP_AUTO_CONFIRM=1; Risk #7 vault-leak prevention).
 
   \`learn enable\` writes \`.claude/kunskap.json\` in the current project
   pointing at the given vault. Confirmation is required (Risk #7 — vault-leak
@@ -69,6 +81,10 @@ Notes:
 
   \`curate\` spawns the curator agent headlessly via \`claude --plugin-dir\`.
   Requires Claude Code on PATH and Anthropic auth configured.
+
+  \`drafts\` operates on <vault>/wiki/_drafts/. The vault is resolved from
+  --vault, then from the project marker (.claude/kunskap.json), then errors.
+  approve/reject perform git mv + a single commit; reject requires --reason.
 
   \`link-stubs\` and \`audit-coverage\` are pure-shell — no LLM, no auth.
 EOF
@@ -657,6 +673,592 @@ cmd_audit_coverage() {
   ' </dev/null
 }
 
+# ---------- init ----------
+
+# Reject substitution inputs that would break the bash literal-substitution
+# pass below or escape into shell-eval contexts when echoed back.
+validate_template_input() {
+  local label="$1" val="$2"
+  [[ "$val" != *$'\n'* ]] || die "$label must not contain a newline"
+  [[ "$val" != *'"'*   ]] || die "$label must not contain a double-quote"
+  [[ "$val" != *\\* ]]    || die "$label must not contain a backslash"
+}
+
+substitute_template() {
+  local file="$1" name="$2" created="$3" shared="$4"
+  [[ -f "$file" ]] || return 0
+  local content
+  content="$(<"$file")"
+  content="${content//\{\{name\}\}/$name}"
+  content="${content//\{\{created\}\}/$created}"
+  content="${content//\{\{shared\}\}/$shared}"
+  printf '%s\n' "$content" > "$file"
+}
+
+write_sample_notes() {
+  local abs="$1" created="$2"
+  cat > "$abs/raw/inbox/example-${created}.md" <<EOF
+---
+type: learning
+session: example
+created: ${created}
+suggested_topic: example-topic
+sources:
+  - thread: ~/.claude/projects/example
+---
+
+# Example inbox note
+
+This is the shape that sessions write to \`raw/inbox/\`. The curator compiles
+notes like this into wiki articles. Replace this file with your own captures
+and run \`/kunskap:curate\` to see it process.
+EOF
+
+  cat > "$abs/Archives/processed-inbox/example-baseline-${created}.md" <<EOF
+---
+type: learning
+session: example
+created: ${created}
+suggested_topic: example-topic
+sources:
+  - thread: ~/.claude/projects/example
+---
+
+# Example baseline note
+
+Pre-curated seed. The wiki article at \`wiki/learnings/example-topic.md\`
+cites this archived inbox file in its \`## Sources\` footer so
+\`kunskap audit-coverage\` passes on a freshly-init'd vault.
+EOF
+
+  cat > "$abs/wiki/learnings/example-topic.md" <<EOF
+---
+type: learning
+area: example
+tags: [example]
+created: ${created}
+last_curated: ${created}
+source_count: 1
+sources:
+  - Archives/processed-inbox/example-baseline-${created}.md
+aliases: ["example topic"]
+author: agent:kunskap-curator
+---
+
+# Example topic
+
+This is the shape of a wiki article. The curator writes prose summarizing
+inbox notes, with \`[[wikilinks]]\` to other topics and a per-source
+\`## Sources\` footer. Replace or extend this with your own articles —
+the curator owns this directory.
+
+## Sources
+
+### example-baseline-${created}.md
+
+> Pre-curated seed. The wiki article at wiki/learnings/example-topic.md
+> cites this archived inbox file in its ## Sources footer.
+
+Original at Archives/processed-inbox/example-baseline-${created}.md
+EOF
+}
+
+print_init_next_steps() {
+  local abs="$1" shared_remote="$2"
+  cat <<EOF
+✓ Kunskap vault created: $abs
+
+Next steps:
+  cd "$abs"
+  git status            # review what was scaffolded
+  git add . && git commit -m "kunskap: vault scaffold"
+
+Enable in a project:
+  cd <some-project>
+  /kunskap:learn enable --vault "$abs"
+
+Roles (P5 will enforce):
+  Edit "$abs/_meta/roles.toml" to declare curator + linter primaries
+  using your \`kunskap whoami\` identity-string.
+EOF
+  if [[ -n "$shared_remote" ]]; then
+    printf '\nShared remote configured: %s\n' "$shared_remote"
+    printf '  After your first commit: git -C "%s" push -u origin main\n' "$abs"
+  fi
+}
+
+cmd_init() {
+  local target="" name="" shared_remote="" force=false yes=false extra=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --shared) require_value --shared "${2-__MISSING__}"; shared_remote="$2"; shift 2 ;;
+      --name)   require_value --name   "${2-__MISSING__}"; name="$2";          shift 2 ;;
+      --force)  force=true; shift ;;
+      --yes|-y) yes=true;   shift ;;
+      --) shift; while [[ $# -gt 0 ]]; do extra+=("$1"); shift; done ;;
+      -*) die "init: unknown flag: $1" ;;
+      *)
+        if [[ -z "$target" ]]; then target="$1"; shift
+        else extra+=("$1"); shift
+        fi
+        ;;
+    esac
+  done
+  [[ -n "$target" ]] || die "init: <path> is required"
+  [[ ${#extra[@]} -eq 0 ]] || die "init: unknown extra args: ${extra[*]}"
+
+  [[ -n "$name" ]] && validate_template_input "--name" "$name"
+  [[ -n "$shared_remote" ]] && validate_template_input "--shared" "$shared_remote"
+
+  # Validate target before requiring git or the template dir, so users see
+  # the path-shape error before the dependency-missing one.
+  if [[ -e "$target" && ! -d "$target" ]]; then
+    die "init: target exists and is not a directory: $target"
+  fi
+  if [[ -d "$target" && -n "$(ls -A "$target" 2>/dev/null)" ]]; then
+    $force || die "init: target $target is non-empty (use --force to scaffold over it)"
+    if ! $yes && [[ "${KUNSKAP_AUTO_CONFIRM:-}" != "1" ]]; then
+      # Scaffolding over a real project's files would be catastrophic; echo
+      # a labeled PATH/ENTRIES summary so a wrong-path mistake is obvious.
+      {
+        printf 'init: target is non-empty.\n'
+        printf '  PATH:    %s\n' "$target"
+        printf '  ENTRIES: %s\n' "$(find "$target" -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')"
+        printf 'Scaffold over it? (y/N) '
+      } >&2
+      local reply=""
+      read -r reply || true
+      [[ "$reply" =~ ^[Yy]$ ]] || die "init: cancelled"
+    fi
+    # Pass-2 finding: --force --yes used to blindly cp -R the template, which
+    # overlaid (and silently overwrote) tracked files like README.md or
+    # .gitignore in non-Kunskap repos. Reject when the target carries any
+    # template-managed top-level file but is NOT already a Kunskap vault —
+    # the marker is `_meta/kunskap.toml` (idempotent re-init still proceeds).
+    if [[ ! -f "$target/_meta/kunskap.toml" ]]; then
+      local clobbers=()
+      for relpath in README.md .gitignore _meta/roles.toml wiki/_index.md; do
+        [[ -e "$target/$relpath" ]] && clobbers+=("$relpath")
+      done
+      if [[ ${#clobbers[@]} -gt 0 ]]; then
+        die "init: $target is not a Kunskap vault and contains files the scaffold would overwrite (${clobbers[*]}). Move them aside or pick a different path."
+      fi
+    fi
+  fi
+
+  command -v git >/dev/null || die "init: \`git\` not on PATH; install git first"
+
+  local root tpl
+  root="$(plugin_root)"
+  tpl="$root/templates/vault-init"
+  [[ -d "$tpl" ]] || die "init: template directory not found at $tpl (set CLAUDE_PLUGIN_ROOT to override)"
+
+  mkdir -p "$target"
+  local abs
+  abs="$(cd "$target" && pwd)"
+
+  cp -R "$tpl/." "$abs/"
+
+  local created shared_value effective_name
+  created="$(date -u +%Y-%m-%d)"
+  shared_value="false"
+  [[ -n "$shared_remote" ]] && shared_value="true"
+  effective_name="${name:-$(basename "$abs")}"
+
+  for f in "$abs/_meta/kunskap.toml" "$abs/wiki/_index.md" "$abs/README.md"; do
+    substitute_template "$f" "$effective_name" "$created" "$shared_value"
+  done
+
+  if [[ ! -d "$abs/.git" ]]; then
+    git -C "$abs" init -q
+  fi
+
+  if [[ -n "$shared_remote" ]]; then
+    if git -C "$abs" remote get-url origin >/dev/null 2>&1; then
+      git -C "$abs" remote set-url origin "$shared_remote"
+    else
+      git -C "$abs" remote add origin "$shared_remote"
+    fi
+  fi
+
+  write_sample_notes "$abs" "$created"
+
+  print_init_next_steps "$abs" "$shared_remote"
+}
+
+# ---------- drafts ----------
+
+# Resolve the vault: --vault wins; otherwise read .claude/kunskap.json from
+# CLAUDE_PROJECT_DIR/PWD (matching hooks). Errors when neither resolves.
+resolve_drafts_vault() {
+  local explicit="$1" marker vault
+  if [[ -n "$explicit" ]]; then
+    [[ "$explicit" = /* ]] || die "drafts: --vault must be an absolute path (got: $explicit)"
+    [[ -d "$explicit" ]] || die "drafts: vault path not found: $explicit"
+    [[ -d "$explicit/wiki/_drafts" ]] || die "drafts: not a kunskap vault (missing wiki/_drafts/): $explicit"
+    printf '%s\n' "$explicit"
+    return 0
+  fi
+  marker="$(marker_path)"
+  if [[ ! -f "$marker" ]]; then
+    die "drafts: no --vault and no project marker at $marker; pass --vault <abs> or run \`kunskap learn enable\` first"
+  fi
+  vault="$(jq -r '.vault // ""' "$marker" 2>/dev/null || true)"
+  [[ -n "$vault" ]] || die "drafts: marker $marker has no \`vault\` field"
+  [[ -d "$vault" ]] || die "drafts: vault $vault from marker does not exist"
+  [[ -d "$vault/wiki/_drafts" ]] || die "drafts: $vault is missing wiki/_drafts/ (run \`kunskap init\` to scaffold)"
+  printf '%s\n' "$vault"
+}
+
+# Walk wiki/_drafts/, parse each file's frontmatter exactly once, and emit
+# one TSV record per draft sorted by created date (oldest first):
+#   created \t slug \t confidence \t reason \t source_count
+# The unparseable-date sort key is "9999-99-99" so missing-date drafts sink
+# to the bottom rather than randomizing the listing.
+list_draft_records() {
+  local vault="$1"
+  find "$vault/wiki/_drafts" -mindepth 1 -maxdepth 1 -name '*.md' -not -name '.gitkeep' 2>/dev/null \
+    | while IFS= read -r f; do
+        awk -v file="$f" '
+          BEGIN { fm = 0; insrc = 0; created = ""; conf = ""; reason = ""; n = 0 }
+          /^---$/ { fm++; if (fm == 2) { exit } ; next }
+          fm != 1 { next }
+          /^created:/    { v = $0; sub(/^created:[[:space:]]*/, "", v);    sub(/[[:space:]]*$/, "", v); created = v; next }
+          /^confidence:/ { v = $0; sub(/^confidence:[[:space:]]*/, "", v); sub(/[[:space:]]*$/, "", v); conf = v;    next }
+          /^reason:/     { v = $0; sub(/^reason:[[:space:]]*/, "", v);     sub(/[[:space:]]*$/, "", v); reason = v;  next }
+          /^sources:/ {
+            insrc = 1
+            if ($0 ~ /\[/) {
+              s = $0
+              sub(/^sources:[[:space:]]*\[/, "", s)
+              sub(/\][[:space:]]*$/, "", s)
+              if (s ~ /[^[:space:]]/) {
+                k = split(s, items, /,[[:space:]]*/)
+                for (i = 1; i <= k; i++) if (items[i] ~ /[^[:space:]]/) n++
+              }
+              insrc = 0
+            }
+            next
+          }
+          insrc && /^[[:space:]]*-[[:space:]]/ { n++; next }
+          insrc && /^[^[:space:]]/ { insrc = 0 }
+          END {
+            slug = file; sub(/.*\//, "", slug); sub(/\.md$/, "", slug)
+            sort_key = (created != "" ? created : "9999-99-99")
+            printf "%s\t%s\t%s\t%s\t%d\n", sort_key, slug, conf, reason, n
+          }
+        ' "$f"
+      done \
+    | sort
+}
+
+# Slugs only, in the same order. Used by `resolve_draft_id`.
+list_draft_slugs() {
+  list_draft_records "$1" | awk -F'\t' '{ print $2 }'
+}
+
+resolve_draft_id() {
+  local vault="$1" needle="$2"
+  [[ -n "$needle" ]] || die "drafts: <id> or <slug> required"
+  # macOS ships bash 3.2 which has no `mapfile` — read into the array by hand.
+  local slugs=() line
+  while IFS= read -r line; do slugs+=("$line"); done < <(list_draft_slugs "$vault")
+  local count=${#slugs[@]}
+  if [[ "$needle" =~ ^[0-9]+$ ]]; then
+    (( needle >= 1 && needle <= count )) || die "drafts: id $needle out of range (have $count)"
+    printf '%s/wiki/_drafts/%s.md\n' "$vault" "${slugs[$((needle - 1))]}"
+    return 0
+  fi
+  local match=""
+  for s in "${slugs[@]}"; do
+    if [[ "$s" == "$needle" ]]; then printf '%s/wiki/_drafts/%s.md\n' "$vault" "$s"; return 0; fi
+  done
+  for s in "${slugs[@]}"; do
+    if [[ "$s" == "$needle"* ]]; then
+      [[ -z "$match" ]] || die "drafts: slug prefix \"$needle\" matches multiple drafts"
+      match="$s"
+    fi
+  done
+  [[ -n "$match" ]] || die "drafts: no draft matching id-or-slug \"$needle\""
+  printf '%s/wiki/_drafts/%s.md\n' "$vault" "$match"
+}
+
+cmd_drafts_list() {
+  local vault_flag="" format="text" extra=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --vault)  require_value --vault  "${2-__MISSING__}"; vault_flag="$2"; shift 2 ;;
+      --format) require_value --format "${2-__MISSING__}"; format="$2";     shift 2 ;;
+      *) extra+=("$1"); shift ;;
+    esac
+  done
+  [[ "$format" == "text" || "$format" == "json" ]] || die "drafts list: --format must be text or json (got: $format)"
+  [[ ${#extra[@]} -eq 0 ]] || die "drafts list: unknown extra args: ${extra[*]}"
+  local vault
+  vault="$(resolve_drafts_vault "$vault_flag")"
+
+  local records=() line
+  while IFS= read -r line; do records+=("$line"); done < <(list_draft_records "$vault")
+
+  if [[ "$format" == "json" ]]; then
+    printf '['
+    local sep="" idx=0
+    for line in "${records[@]}"; do
+      idx=$((idx + 1))
+      IFS=$'\t' read -r created slug conf reason srcn <<<"$line"
+      local age display_created="$created"
+      [[ "$created" == "9999-99-99" ]] && display_created=""
+      age="$(days_since "$display_created")"
+      conf="${conf//\"/\\\"}"
+      reason="${reason//\"/\\\"}"
+      printf '%s\n  {"id": %d, "slug": "%s", "confidence": "%s", "reason": "%s", "source_count": %d, "created": "%s", "age_days": "%s"}' \
+        "$sep" "$idx" "$slug" "$conf" "$reason" "$srcn" "$display_created" "$age"
+      sep=","
+    done
+    printf '\n]\n'
+    return 0
+  fi
+
+  if [[ ${#records[@]} -eq 0 ]]; then
+    echo "kunskap: no drafts in $vault/wiki/_drafts/"
+    return 0
+  fi
+  echo "kunskap: drafts in $vault/wiki/_drafts/ (oldest first)"
+  local idx=0
+  for line in "${records[@]}"; do
+    idx=$((idx + 1))
+    IFS=$'\t' read -r created slug conf _reason srcn <<<"$line"
+    local age display_created="$created"
+    [[ "$created" == "9999-99-99" ]] && display_created=""
+    age="$(days_since "$display_created")"
+    printf '  [%d] %s  conf=%s  src=%s  age=%sd\n' "$idx" "$slug" "${conf:-?}" "$srcn" "$age"
+  done
+}
+
+cmd_drafts_show() {
+  local vault_flag="" needle="" extra=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --vault) require_value --vault "${2-__MISSING__}"; vault_flag="$2"; shift 2 ;;
+      *)
+        if [[ -z "$needle" ]]; then needle="$1"; shift
+        else extra+=("$1"); shift
+        fi
+        ;;
+    esac
+  done
+  [[ -n "$needle" ]] || die "drafts show: <id> or <slug> required"
+  [[ ${#extra[@]} -eq 0 ]] || die "drafts show: unknown extra args: ${extra[*]}"
+  local vault f
+  vault="$(resolve_drafts_vault "$vault_flag")"
+  f="$(resolve_draft_id "$vault" "$needle")"
+  echo "# $(basename "$f" .md)"
+  echo "# path: $f"
+  echo
+  cat "$f"
+}
+
+git_commit_drafts_action() {
+  local vault="$1" msg="$2"
+  [[ -d "$vault/.git" ]] || return 0
+  # `git add -A` for the two pathspecs picks up adds, modifies, and deletions.
+  # Plain `git add` skips deletions, which would leave _drafts/<slug>.md
+  # tracked-but-missing after approve/reject and split the commit in two.
+  git -C "$vault" add -A wiki Archives 2>/dev/null || true
+  if git -C "$vault" diff --cached --quiet; then return 0; fi
+  # Fresh `kunskap init` repos have no committer set; fall back to a kunskap@local
+  # identity for the single triage commit rather than blocking on git config.
+  if ! git -C "$vault" commit -q -m "$msg" 2>/dev/null; then
+    git -C "$vault" -c user.email=kunskap@local -c user.name=kunskap \
+       -c commit.gpgsign=false commit -q -m "$msg"
+  fi
+}
+
+cmd_drafts_approve() {
+  local vault_flag="" needle="" into="" extra=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --vault) require_value --vault "${2-__MISSING__}"; vault_flag="$2"; shift 2 ;;
+      --into)  require_value --into  "${2-__MISSING__}"; into="$2";       shift 2 ;;
+      *)
+        if [[ -z "$needle" ]]; then needle="$1"; shift
+        else extra+=("$1"); shift
+        fi
+        ;;
+    esac
+  done
+  [[ -n "$needle" ]] || die "drafts approve: <id> or <slug> required"
+  [[ ${#extra[@]} -eq 0 ]] || die "drafts approve: unknown extra args: ${extra[*]}"
+  local vault src slug today
+  vault="$(resolve_drafts_vault "$vault_flag")"
+  src="$(resolve_draft_id "$vault" "$needle")"
+  slug="$(basename "$src" .md)"
+  today="$(date -u +%Y-%m-%d)"
+
+  local dest_article archive
+  archive="$vault/Archives/processed-drafts/approved/$slug.md"
+  mkdir -p "$vault/wiki/learnings" "$vault/Archives/processed-drafts/approved"
+
+  # Privacy / safety: --into <slug> requires the target article to already
+  # exist; we never silently create one under the user's nose.
+  if [[ -n "$into" ]]; then
+    dest_article="$vault/wiki/learnings/${into}.md"
+    [[ -f "$dest_article" ]] || die "drafts approve: --into target $dest_article does not exist; create it first or omit --into"
+    # Extract body. Frontmatter exists iff line 1 is `---`; in that case the
+    # next `---` closes it. Anything else (including subsequent `---` body
+    # lines) is body content. Drafts without frontmatter print whole-file.
+    # Pass-1 fix: prior `sed -n '/^---$/,/^---$/!p'` lost body content
+    # between successive `---` body lines.
+    # Pass-2 fix: prior counting awk dropped the entire body when a draft
+    # had no frontmatter — only the heading was appended.
+    {
+      printf '\n### %s — promoted from drafts/%s\n\n' "$today" "$slug"
+      awk '
+        BEGIN { saw_fm = 0; fm = 0 }
+        NR == 1 && /^---$/ { saw_fm = 1; fm = 1; next }
+        saw_fm && fm == 1 && /^---$/ { fm = 2; next }
+        saw_fm && fm == 1 { next }
+        { print }
+      ' "$src"
+    } >> "$dest_article"
+  else
+    dest_article="$vault/wiki/learnings/${slug}.md"
+    [[ ! -f "$dest_article" ]] || die "drafts approve: $dest_article already exists; pass --into <slug> to merge instead"
+    # Strip drafts-only frontmatter fields when promoting to a learnings article.
+    awk -v today="$today" '
+      BEGIN { fm = 0; in_fm = 0 }
+      /^---$/ {
+        fm++
+        if (fm == 1) { in_fm = 1; print; next }
+        if (fm == 2) { print "last_curated: " today; in_fm = 0; print; next }
+        print; next
+      }
+      in_fm {
+        if ($0 ~ /^(confidence|reason|deferred_at|approved_at|rejection_reason|lane):/) next
+        if ($0 ~ /^type:[[:space:]]*draft[[:space:]]*$/) { print "type: learning"; next }
+      }
+      { print }
+    ' "$src" > "$dest_article"
+  fi
+
+  # Archive: we copy the source to the archive (rather than git mv) so the
+  # archived form can carry an `approved_at:` stamp that points at the
+  # original draft body without disturbing the promoted article's frontmatter.
+  awk -v ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)" -v target="${into:-$slug}" '
+    BEGIN { fm = 0 }
+    /^---$/ {
+      fm++
+      print
+      if (fm == 1) {
+        print "approved_at: " ts
+        print "approved_into: " target
+      }
+      next
+    }
+    { print }
+  ' "$src" > "$archive"
+  rm -f "$src"
+
+  git_commit_drafts_action "$vault" "kunskap: drafts approve $slug${into:+ → $into}"
+  echo "kunskap: approved $slug → $dest_article"
+  echo "         archived original at $archive"
+}
+
+cmd_drafts_reject() {
+  local vault_flag="" needle="" reason="" extra=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --vault)  require_value --vault  "${2-__MISSING__}"; vault_flag="$2"; shift 2 ;;
+      --reason) require_value --reason "${2-__MISSING__}"; reason="$2";     shift 2 ;;
+      *)
+        if [[ -z "$needle" ]]; then needle="$1"; shift
+        else extra+=("$1"); shift
+        fi
+        ;;
+    esac
+  done
+  [[ -n "$needle" ]] || die "drafts reject: <id> or <slug> required"
+  [[ -n "$reason" ]] || die "drafts reject: --reason \"<why>\" is required (rejection without reason loses context)"
+  [[ ${#extra[@]} -eq 0 ]] || die "drafts reject: unknown extra args: ${extra[*]}"
+  validate_template_input "--reason" "$reason"
+  local vault src slug archive
+  vault="$(resolve_drafts_vault "$vault_flag")"
+  src="$(resolve_draft_id "$vault" "$needle")"
+  slug="$(basename "$src" .md)"
+  archive="$vault/Archives/processed-drafts/rejected/$slug.md"
+  mkdir -p "$vault/Archives/processed-drafts/rejected"
+  [[ ! -e "$archive" ]] || die "drafts reject: $archive already exists (slug collision)"
+
+  awk -v ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)" -v reason="$reason" '
+    BEGIN { fm = 0 }
+    /^---$/ {
+      fm++
+      print
+      if (fm == 1) {
+        print "rejected_at: " ts
+        print "rejection_reason: \"" reason "\""
+      }
+      next
+    }
+    { print }
+  ' "$src" > "$archive"
+  rm -f "$src"
+
+  git_commit_drafts_action "$vault" "kunskap: drafts reject $slug — $reason"
+  echo "kunskap: rejected $slug → $archive"
+}
+
+cmd_drafts_defer() {
+  local vault_flag="" needle="" extra=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --vault) require_value --vault "${2-__MISSING__}"; vault_flag="$2"; shift 2 ;;
+      *)
+        if [[ -z "$needle" ]]; then needle="$1"; shift
+        else extra+=("$1"); shift
+        fi
+        ;;
+    esac
+  done
+  [[ -n "$needle" ]] || die "drafts defer: <id> or <slug> required"
+  [[ ${#extra[@]} -eq 0 ]] || die "drafts defer: unknown extra args: ${extra[*]}"
+  local vault src slug
+  vault="$(resolve_drafts_vault "$vault_flag")"
+  src="$(resolve_draft_id "$vault" "$needle")"
+  slug="$(basename "$src" .md)"
+
+  local tmp
+  tmp="$(mktemp)"
+  awk -v ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)" '
+    BEGIN { fm = 0; stamped = 0 }
+    /^---$/ {
+      fm++
+      if (fm == 2 && !stamped) { print "deferred_at: " ts; stamped = 1 }
+      print
+      next
+    }
+    fm == 1 && /^deferred_at:/ { next }
+    { print }
+  ' "$src" > "$tmp"
+  mv "$tmp" "$src"
+
+  git_commit_drafts_action "$vault" "kunskap: drafts defer $slug"
+  echo "kunskap: deferred $slug (stamped deferred_at; left in _drafts/)"
+}
+
+cmd_drafts() {
+  local sub="${1:-list}"
+  shift || true
+  case "$sub" in
+    list)    cmd_drafts_list    "$@" ;;
+    show)    cmd_drafts_show    "$@" ;;
+    approve) cmd_drafts_approve "$@" ;;
+    reject)  cmd_drafts_reject  "$@" ;;
+    defer)   cmd_drafts_defer   "$@" ;;
+    *)       die "drafts: unknown subcommand: $sub (try list | show | approve | reject | defer)" ;;
+  esac
+}
+
 main() {
   # Pre-dispatch globals are consumed only when they precede the first
   # non-flag token; subcommand-local `--vault` (curate, learn enable) is
@@ -672,10 +1274,12 @@ main() {
   case "$cmd" in
     version|--version)        echo "kunskap $VERSION" ;;
     help|--help|-h)           cmd_help ;;
+    init)                     cmd_init "$@" ;;
     config)                   cmd_config "$@" ;;
     whoami)                   cmd_whoami "$@" ;;
     learn)                    cmd_learn "$@" ;;
     curate)                   cmd_curate "$@" ;;
+    drafts)                   cmd_drafts "$@" ;;
     link-stubs)               cmd_link_stubs "$@" ;;
     audit-coverage)           cmd_audit_coverage "$@" ;;
     *) die "unknown subcommand: $cmd (try \`kunskap help\`)" ;;

@@ -1,0 +1,9 @@
+# Role assignment. Edit by hand. P5 will enforce these checks.
+# Identity-string format: <user>@<host>. Run `kunskap whoami` to see yours.
+# Single primary per role, no fallback (see design §Q4).
+
+[roles.curator]
+primary = "TBD"
+
+[roles.linter]
+primary = "TBD"

@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.3.0 — 2026-05-05 — P3 vault bootstrap + drafts surface
+
+- `bin/kunskap init <path> [--shared <git-remote>] [--name <human-readable>] [--force] [--yes]` (per design §Q3). Self-state checks before external (P1 §5 lesson): validates target before requiring `git` on PATH or the template dir. Existing non-empty target requires `--force` plus interactive confirmation (Risk #7 — labeled `PATH:` / `ENTRIES:` summary so wrong-path mistakes are obvious). `KUNSKAP_AUTO_CONFIRM=1` and `--yes` bypass the prompt for scripts.
+- `templates/vault-init/` — full scaffold: `_meta/{kunskap,roles}.toml`, `wiki/{_index.md,_drafts,learnings,ideas,concepts,patterns,bases}/`, `raw/inbox/`, `Archives/{processed-inbox,processed-drafts/{approved,rejected}}/`, `README.md`, `.gitignore`. Substitutes `{{name}}` / `{{created}}` / `{{shared}}` via bash literal-substitution (no sed escaping).
+- `templates/article.md` + `templates/inbox-note.md` — version-controllable shape references for the curator and session-end captures.
+- Sample notes seeded by `init` are deliberately **neutral** (no specific research domain, per Risk #7 vault-leak prevention) and shaped so a fresh vault passes `kunskap audit-coverage` with `covered_count >= 1`.
+- `commands/drafts.md` + `bin/kunskap drafts list | show | approve | reject | defer` — port of the conductor `/drafts` surface (Sebastian's solo-flow pattern, ported into the plugin per design §Drafts review loop). Vault resolution: `--vault` flag wins, else project marker `.claude/kunskap.json`. `approve [--into <slug>]` either creates a new article or appends under a dated heading; archives original to `Archives/processed-drafts/approved/` with `approved_at` + `approved_into` stamps. `reject` requires `--reason` (rejection without reason loses context). `defer` stamps `deferred_at:` and is idempotent. Each action is a single git commit via `git add -A wiki Archives` (so deletions get staged, not just adds).
+- Drafts naming convention locked: curator writes `_drafts/<topic-slug>--<iso-date>.md` (per design §Open decisions #5). Three new static-prompt tests assert the convention is encoded in `agents/curator.md` so future prompt edits can't silently drop it.
+- CI `.github/workflows/p3.yml`: shellcheck, version-drift check, help-text covers `init` + `drafts`, templates tree completeness + substitution-placeholder lint, `commands/drafts.md` argument-hint check, full bats suite, end-to-end `init → curate --check → drafts list` smoke (the P3 hard contract: a freshly-init'd vault must satisfy curate-check and drafts-list with no manual fixup).
+- `bin/kunskap version` bumps to `0.3.0`.
+
 ## v0.2.0 — 2026-05-05 — P2 opt-in surface + sync hooks
 
 - `commands/learn.md` + `bin/kunskap learn enable | disable | status` (per design §Q6).

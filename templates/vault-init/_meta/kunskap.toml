@@ -1,0 +1,10 @@
+# Vault metadata. Edit by hand; the CLI reads this, never writes back.
+[vault]
+name = "{{name}}"
+created = "{{created}}"
+shared = {{shared}}
+schema_version = 1
+
+[wiki]
+default_lane = "learnings"
+draft_review = "human"
