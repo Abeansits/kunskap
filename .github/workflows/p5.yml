@@ -52,11 +52,16 @@ jobs:
           grep -q 'kunskap: curator run record' agents/curator.md
           grep -q 'preserving any existing `linter` block' agents/curator.md
 
-      - name: agents/linter.md encodes MUST 9 + last-run.json whitelist (P5)
+      - name: agents/linter.md encodes MUST 9 + sharded last-run whitelist (P5)
         run: |
           grep -q 'MUST 9 — record the run' agents/linter.md
           grep -q 'SOLE permitted write' agents/linter.md
           grep -q 'kunskap: linter run record' agents/linter.md
+          grep -q '_meta/last-run/linter.json' agents/linter.md
+          grep -q '_meta/last-run/curator.json' agents/linter.md
+          # Defense in depth: linter prompt explicitly tells the agent NOT
+          # to touch the curator's shard (Pass-2 sharding lesson).
+          grep -q 'curator-owned' agents/linter.md
 
       # ---------- bats suites ----------
 
@@ -75,7 +80,7 @@ jobs:
       - name: bats — P5 two-machine identity simulation (P5)
         run: bats tests/contract/two-machine.bats
 
-      - name: bats — P5 last-run.json whitelist source surface (P5)
+      - name: bats — P5 last-run/<role>.json whitelist source surface (P5)
         run: bats tests/contract/last-run-cli.bats
 
       - name: bats — P5 TOML constrained-subset fuzz (P5)

@@ -4,9 +4,9 @@ Knowledge-base plugin for Claude Code. Sessions write loose notes into an inbox;
 
 ## Status
 
-**v0.5.0 — P5 role assignment.** Multiplayer-ready. `bin/kunskap curate` and `bin/kunskap lint` now enforce `_meta/roles.toml` — only the machine identified as `roles.<role>.primary` runs the agent without `--force`. `_meta/last-run.json` records every run (`by`, counts, head oids, `forced` flag) for audit. The headless-agent CWD bug (P4 §2: sandbox scoped to spawning CWD, not `--plugin-dir`) is fixed — `curate` / `lint` now work from any directory.
+**v0.5.0 — P5 role assignment.** Multiplayer-ready. `bin/kunskap curate` and `bin/kunskap lint` now enforce `_meta/roles.toml` — only the machine identified as `roles.<role>.primary` runs the agent without `--force`. `_meta/last-run/{curator,linter}.json` (sharded per-role — design §Q4 "no shared file both are racing on" invariant) records every run (`by`, counts, head oids, `forced` flag) for audit. The headless-agent CWD bug (P4 §2: sandbox scoped to spawning CWD, not `--plugin-dir`) is fixed — `curate` / `lint` now work from any directory.
 
-Single-primary, no fallback, no advisory lock (design §Q4 — pass-2 review explicitly rejected the lock variant after a TOCTOU finding). The linter agent gets one explicit whitelisted write — `_meta/last-run.json` — to record its own run; the CLI invariant check refuses any other path.
+Single-primary, no fallback, no advisory lock (design §Q4 — pass-2 review explicitly rejected the lock variant after a TOCTOU finding). The linter agent gets one explicit whitelisted write — `_meta/last-run/linter.json` — to record its own run; the CLI invariant check refuses any other path. The curator owns `_meta/last-run/curator.json` and never writes the linter's shard.
 
 The phased rollout (P0 → P6) is in [`docs/kunskap-design.md`](docs/kunskap-design.md). The MVP is P0 → P3; multiplayer-safety is P5; P6 (search + marketplace) is the only remaining phase.
 
@@ -77,7 +77,7 @@ kunskap curate --vault <vault> --force --yes
 kunskap lint   --vault <vault> --force --yes
 ```
 
-`--force` runs are recorded with `forced: true` in `_meta/last-run.json` for audit. The interactive confirmation prompt is bypassed by `--yes` or `KUNSKAP_AUTO_CONFIRM=1` (cron / CI scenarios).
+`--force` runs are recorded with `forced: true` in `_meta/last-run/<role>.json` for audit. The interactive confirmation prompt is bypassed by `--yes` or `KUNSKAP_AUTO_CONFIRM=1` (cron / CI scenarios).
 
 A freshly-init'd vault carries `primary = "TBD"` for both roles — that warns and proceeds (solo workflows and pre-handoff teams need to work without role config). Set the primaries when the vault becomes shared between two or more machines.
 
@@ -112,7 +112,7 @@ Full design: [`docs/kunskap-design.md`](docs/kunskap-design.md). Phased rollout 
 | **P2** | `/kunskap:learn enable\|disable\|status` + `SessionStart` / `SessionEnd` sync hooks. |
 | **P3** | `kunskap init <vault-path>` + drafts surface (list/show/approve/reject/defer). MVP complete. |
 | **P4** | Linter agent + health checks (drift, stub clusters, draft staleness, offline arrivals, curator-idle, identity-mismatch). Read-only contract. |
-| **P5 (this release)** | Single-primary role assignment (`_meta/roles.toml`) + `_meta/last-run.json` recording + CWD-fix for headless agents. Multiplayer-ready. |
+| **P5 (this release)** | Single-primary role assignment (`_meta/roles.toml`) + `_meta/last-run/{curator,linter}.json` (sharded per-role) + CWD-fix for headless agents. Multiplayer-ready. |
 | **P6** | Search (`kunskap recall`) + marketplace listing + polish. |
 
 ## License

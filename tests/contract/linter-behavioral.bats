@@ -100,8 +100,9 @@ EOF
   note_iso="$(date_ago -72h +%Y-%m-%dT%H:%M:%SZ)"
   ran_iso="$(date_ago -50h +%Y-%m-%dT%H:%M:%SZ)"
   mkdir -p "$TMPVAULT/_meta"
-  cat > "$TMPVAULT/_meta/last-run.json" <<EOF
-{ "curator": { "ran_at": "$ran_iso", "by": "sebastian@laptop", "inbox_processed": 0, "articles_written": 0, "drafts_routed": 0 } }
+  mkdir -p "$TMPVAULT/_meta/last-run"
+  cat > "$TMPVAULT/_meta/last-run/curator.json" <<EOF
+{ "ran_at": "$ran_iso", "by": "sebastian@laptop", "inbox_processed": 0, "articles_written": 0, "drafts_routed": 0 }
 EOF
   cat > "$TMPVAULT/raw/inbox/learning-matt-discovery-${note_iso:0:10}.md" <<EOF
 ---
@@ -126,9 +127,9 @@ EOF
 @test "MUST 5 — curator ran 60h ago emits [CURATOR-IDLE]" {
   local stale_run
   stale_run="$(date_ago -60h +%Y-%m-%dT%H:%M:%SZ)"
-  mkdir -p "$TMPVAULT/_meta"
-  cat > "$TMPVAULT/_meta/last-run.json" <<EOF
-{ "curator": { "ran_at": "$stale_run", "by": "sebastian@laptop" } }
+  mkdir -p "$TMPVAULT/_meta/last-run"
+  cat > "$TMPVAULT/_meta/last-run/curator.json" <<EOF
+{ "ran_at": "$stale_run", "by": "sebastian@laptop" }
 EOF
   ( cd "$TMPVAULT" && git add . && git -c user.email=t@l -c user.name=t commit -q -m "seed stale curator-run" )
   run run_linter
@@ -222,9 +223,9 @@ EOF
   # Stack a couple of scenarios so we expect at least one finding.
   local stale_run
   stale_run="$(date_ago -60h +%Y-%m-%dT%H:%M:%SZ)"
-  mkdir -p "$TMPVAULT/_meta"
-  cat > "$TMPVAULT/_meta/last-run.json" <<EOF
-{ "curator": { "ran_at": "$stale_run", "by": "sebastian@laptop" } }
+  mkdir -p "$TMPVAULT/_meta/last-run"
+  cat > "$TMPVAULT/_meta/last-run/curator.json" <<EOF
+{ "ran_at": "$stale_run", "by": "sebastian@laptop" }
 EOF
   ( cd "$TMPVAULT" && git add . && git -c user.email=t@l -c user.name=t commit -q -m "seed json scenario" )
   run run_linter --format json

@@ -1,8 +1,8 @@
 #!/usr/bin/env bats
-# P5 — _meta/last-run.json whitelist enforcement on the CLI side.
+# P5 — _meta/last-run/linter.json whitelist enforcement on the CLI side.
 #
 # The linter agent is permitted exactly ONE write inside the vault:
-# `_meta/last-run.json`. Every other path is a contract violation and the
+# `_meta/last-run/linter.json`. Every other path is a contract violation and the
 # CLI's authoritative invariant check (see bin/kunskap cmd_lint) refuses.
 # This suite asserts the source-level shape of that whitelist; behavioral
 # verification (a real linter run) lives in linter-behavioral.bats.
@@ -11,8 +11,8 @@ load helpers
 
 # ---------- source surface (catches refactor regressions) ----------
 
-@test "cmd_lint whitelist mentions _meta/last-run.json by name" {
-  fn_body cmd_lint | grep -q '"_meta/last-run.json"'
+@test "cmd_lint whitelist mentions _meta/last-run/linter.json by name" {
+  fn_body cmd_lint | grep -q '"_meta/last-run/linter.json"'
 }
 
 @test "cmd_lint whitelist comment names P5 + the SOLE permitted exception" {
@@ -37,23 +37,24 @@ load helpers
 
 # ---------- agent-prompt-side: linter MUST 9 + curator step 6 ----------
 
-@test "agents/linter.md describes the run-record write to _meta/last-run.json" {
-  linter_prompt_contains "_meta/last-run.json"
+@test "agents/linter.md describes the run-record write to _meta/last-run/linter.json" {
+  linter_prompt_contains "_meta/last-run/linter.json"
   linter_prompt_contains "MUST 9"
 }
 
-@test "agents/linter.md preserves the curator section via jq merge" {
-  linter_prompt_contains "Preserve any existing"
-  linter_prompt_contains "curator"
+@test "agents/linter.md MUST NOT touch the curator-owned shard" {
+  linter_prompt_contains "_meta/last-run/curator.json"
+  linter_prompt_contains "curator-owned"
 }
 
-@test "agents/curator.md final step writes _meta/last-run.json#curator" {
+@test "agents/curator.md final step writes _meta/last-run/curator.json" {
   prompt_contains "curator run record"
-  prompt_contains "_meta/last-run.json"
+  prompt_contains "_meta/last-run/curator.json"
 }
 
-@test "agents/curator.md preserves the linter section via jq merge" {
-  prompt_contains "preserving any existing \`linter\` block"
+@test "agents/curator.md sharded layout preserves \"no shared file\" §Q4 invariant" {
+  prompt_contains "sharded per-role"
+  prompt_contains "no shared file"
 }
 
 @test "agents/curator.md final step records inbox_processed / articles_written / drafts_routed" {

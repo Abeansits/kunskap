@@ -171,15 +171,15 @@ setup() {
 
 # ---------- P5: run-record + role-aware metadata ----------
 
-@test "P5 — final run-record step writes _meta/last-run.json#curator + commit" {
+@test "P5 — final run-record step writes _meta/last-run/curator.json + commit" {
   prompt_contains "Record the run"
-  prompt_contains "_meta/last-run.json"
+  prompt_contains "_meta/last-run/curator.json"
   prompt_contains "kunskap: curator run record"
 }
 
-@test "P5 — run-record preserves the linter section via jq merge" {
-  prompt_contains "preserving any existing \`linter\` block"
-  prompt_contains "jq --argjson v"
+@test "P5 — sharded per-role layout preserves §Q4 \"no shared file\" invariant" {
+  prompt_contains "sharded per-role"
+  prompt_contains "no shared file"
 }
 
 @test "P5 — run-record fields cover counts + head oids + forced flag" {

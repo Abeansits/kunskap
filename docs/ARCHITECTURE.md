@@ -38,29 +38,42 @@ The subset is enforced by `tests/contract/toml-fuzz.bats`: a battery of out-of-s
 
 Per the P4 vault learning §2: `claude --plugin-dir <repo> -p "<directive>"` sandboxes the agent's filesystem reads to the spawning process's CWD, NOT to `--plugin-dir` and NOT to the agent's `$ARGUMENTS`. `bin/kunskap curate` and `bin/kunskap lint` therefore `cd "$vault"` before spawning AND pass `--add-dir "$vault"` (belt-and-suspenders — `--add-dir` extends sandbox access in Claude Code 1.x). Without this, running `kunskap curate --vault X` from any directory other than `X` produces `Read`-blocked agent runs and `[DRIFT]` self-check failures — fixed in P5.
 
-## Run-record file: `_meta/last-run.json`
+## Run-record files: `_meta/last-run/{curator,linter}.json`
 
-Two writers, two sections, never clobber:
+Sharded per-role — one file per writer, no jq-merge needed, no possible rebase conflict between concurrent runs:
+
+```
+_meta/last-run/
+├── curator.json    # curator-only writes (curator-owned)
+└── linter.json     # linter-only writes (linter-owned)
+```
+
+`curator.json` shape:
 
 ```json
 {
-  "curator": {
-    "ran_at": "<iso-8601 UTC>",
-    "by": "<name>@<host>",
-    "inbox_processed": <N>,
-    "articles_written": <M>,
-    "drafts_routed": <K>,
-    "head_before": "<git oid>",
-    "head_after": "<git oid>",
-    "forced": <bool>
-  },
-  "linter": {
-    "ran_at": "<iso-8601 UTC>",
-    "by": "<name>@<host>",
-    "findings_count": <N>,
-    "forced": <bool>
-  }
+  "ran_at": "<iso-8601 UTC>",
+  "by": "<name>@<host>",
+  "inbox_processed": <N>,
+  "articles_written": <M>,
+  "drafts_routed": <K>,
+  "head_before": "<git oid>",
+  "head_after": "<git oid>",
+  "forced": <bool>
 }
 ```
 
-Both agents merge their section via jq, preserving the other side. The curator agent owns its block (it has Write + Bash and writes per-article anyway); the linter agent owns its block (the SOLE whitelisted write — see `agents/linter.md` MUST 8 + MUST 9, and `bin/kunskap lint`'s post-run path-by-path whitelist enforcement). The `forced` field is the audit trail for `--force` overrides of the role check.
+`linter.json` shape:
+
+```json
+{
+  "ran_at": "<iso-8601 UTC>",
+  "by": "<name>@<host>",
+  "findings_count": <N>,
+  "forced": <bool>
+}
+```
+
+**Why sharded?** Codex Pass-2 review of the initial P5 implementation (which used a single `_meta/last-run.json` with `curator` and `linter` sections jq-merged) found via empirical repro that two machines writing different keys to the same file *can* hit a rebase conflict when one push is rejected and `git pull --rebase` runs — breaking the design §Q4 promise that "second push fails non-fast-forward, second run aborts cleanly (no half-rebased state, because there's no shared file both are racing on)." Sharding eliminates the failure mode by construction: curator and linter never write the same file, so the textual merge can never collide.
+
+The curator agent owns its file (it has Write + Bash and writes per-article anyway). The linter agent owns its file (the SOLE whitelisted write — see `agents/linter.md` MUST 8 + MUST 9, and `bin/kunskap lint`'s post-run path-by-path whitelist enforcement; the linter's whitelist is exactly `_meta/last-run/linter.json`). The `forced` field is the audit trail for `--force` overrides of the role check.
