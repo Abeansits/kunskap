@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="0.3.0"
+VERSION="0.4.0"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/kunskap"
 IDENTITY_FILE="$CONFIG_DIR/identity.toml"
 
@@ -50,6 +50,7 @@ Usage:
   kunskap learn disable
   kunskap learn status
   kunskap curate --vault <abs-path> [--check]
+  kunskap lint   [--vault <abs-path>] [--format text|json]
   kunskap drafts list   [--vault <abs-path>] [--format text|json]
   kunskap drafts show   <id-or-slug> [--vault <abs-path>]
   kunskap drafts approve <id-or-slug> [--into <article-slug>] [--vault <abs-path>]
@@ -81,6 +82,13 @@ Notes:
 
   \`curate\` spawns the curator agent headlessly via \`claude --plugin-dir\`.
   Requires Claude Code on PATH and Anthropic auth configured.
+
+  \`lint\` spawns the linter agent the same way. Read-only: the agent never
+  writes to the vault, and the CLI verifies \`git status --porcelain\` is
+  clean post-run (fails non-zero if the read-only invariant was violated).
+  Exit codes: 0 = no findings, 1 = findings present (default mode);
+  \`--format json\` always exits 0 and emits a structured findings array.
+  Vault resolves from --vault, then the project marker (.claude/kunskap.json).
 
   \`drafts\` operates on <vault>/wiki/_drafts/. The vault is resolved from
   --vault, then from the project marker (.claude/kunskap.json), then errors.
@@ -459,6 +467,92 @@ $vault
 The curator's system prompt already encodes the full §Curator contract — it knows what to do once it has the vault path. Do NOT attempt the curation work yourself; the curator subagent must own it. Do not write outside $vault. Do not modify this plugin repo. Report the curator's summary back when it returns."
 
   exec claude --plugin-dir "$root" --permission-mode acceptEdits -p "$prompt"
+}
+
+cmd_lint() {
+  local vault_flag="" format="text" extra=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --vault)  require_value --vault  "${2-__MISSING__}"; vault_flag="$2"; shift 2 ;;
+      --format) require_value --format "${2-__MISSING__}"; format="$2";     shift 2 ;;
+      *) extra+=("$1"); shift ;;
+    esac
+  done
+  [[ "$format" == "text" || "$format" == "json" ]] || die "lint: --format must be text or json (got: $format)"
+  [[ ${#extra[@]} -eq 0 ]] || die "lint: unknown extra args: ${extra[*]}"
+
+  # Vault resolution: flag wins, else project marker (P2 enable pattern).
+  local vault
+  if [[ -n "$vault_flag" ]]; then
+    vault="$vault_flag"
+  else
+    local marker
+    marker="$(marker_path)"
+    [[ -f "$marker" ]] \
+      || die "lint: no --vault and no project marker at $marker; pass --vault <abs> or run \`kunskap learn enable\` first"
+    vault="$(jq -r '.vault // ""' "$marker" 2>/dev/null || true)"
+    [[ -n "$vault" ]] || die "lint: marker $marker has no \`vault\` field"
+  fi
+  validate_vault "$vault"
+
+  # Self-state checks before external (P1 §5): plugin shape before claude PATH.
+  local root prompt_format prompt
+  root="$(plugin_root)"
+  [[ -f "$root/agents/linter.md" ]] \
+    || die "lint: linter agent not found at $root/agents/linter.md (plugin_root resolved to $root; set CLAUDE_PLUGIN_ROOT to override)"
+  command -v claude >/dev/null || die "lint: \`claude\` not on PATH; install Claude Code first"
+
+  # Read-only invariant snapshot — capture BEFORE so a pre-existing dirty
+  # vault isn't blamed on the linter (P3 §3 lesson on scaffold-overlay
+  # contracts: never gate on a clean state we didn't establish). The check
+  # below compares pre vs post; non-equal = the agent wrote.
+  local status_before status_after
+  if [[ -d "$vault/.git" ]]; then
+    status_before="$(git -C "$vault" status --porcelain 2>/dev/null || true)"
+  else
+    status_before=""
+  fi
+
+  prompt_format="$format"
+  prompt="You have one task: invoke the \`linter\` subagent (defined in this plugin's agents/linter.md) via the Agent tool, passing this exact string as its ARGUMENTS:
+
+$vault
+
+The linter's system prompt encodes the full read-only audit contract — it knows what to do once it has the vault path. Output format: $prompt_format. If the format is \"json\", instruct the linter to emit a single JSON object with a \`findings: [...]\` array of {type, severity, path, message, suggested_action} records (and NO human-readable text). If \"text\", findings are one per line in the shape \`[TYPE] path | message\`, grouped by severity.
+
+Do NOT attempt the audit yourself; the linter subagent must own it. Do NOT write to the vault — the linter is read-only. Do not modify this plugin repo. Report the linter's output verbatim."
+
+  local agent_out agent_status
+  set +e
+  agent_out="$(claude --plugin-dir "$root" --permission-mode acceptEdits -p "$prompt")"
+  agent_status=$?
+  set -e
+
+  printf '%s\n' "$agent_out"
+
+  # Read-only invariant check — non-equal pre vs post = the agent wrote.
+  # Distinct exit code (2) so callers can distinguish from findings (1).
+  if [[ -d "$vault/.git" ]]; then
+    status_after="$(git -C "$vault" status --porcelain 2>/dev/null || true)"
+    if [[ "$status_before" != "$status_after" ]]; then
+      echo "kunskap: lint MUST 8 violation — vault state changed during linter run (read-only contract broken). Pre vs post diff:" >&2
+      diff <(printf '%s\n' "$status_before") <(printf '%s\n' "$status_after") >&2 || true
+      return 2
+    fi
+  fi
+
+  if [[ "$agent_status" -ne 0 ]]; then
+    return "$agent_status"
+  fi
+
+  # Exit 0 for JSON (the JSON IS the output; downstream parses it).
+  # Exit 1 for text mode if any line starts with `[<TYPE>]` (a finding line).
+  [[ "$format" == "json" ]] && return 0
+
+  if printf '%s\n' "$agent_out" | grep -Eq '^\[[A-Z-]+\][[:space:]]'; then
+    return 1
+  fi
+  return 0
 }
 
 cmd_link_stubs() {
@@ -1279,6 +1373,7 @@ main() {
     whoami)                   cmd_whoami "$@" ;;
     learn)                    cmd_learn "$@" ;;
     curate)                   cmd_curate "$@" ;;
+    lint)                     cmd_lint "$@" ;;
     drafts)                   cmd_drafts "$@" ;;
     link-stubs)               cmd_link_stubs "$@" ;;
     audit-coverage)           cmd_audit_coverage "$@" ;;

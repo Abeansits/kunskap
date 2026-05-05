@@ -1,0 +1,149 @@
+name: P4 — linter agent
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash -euo pipefail {0}
+
+jobs:
+  p4:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install bats + jq
+        run: sudo apt-get update -qq && sudo apt-get install -y bats jq
+
+      # ---------- shellcheck (cumulative — bin/kunskap, hooks) ----------
+
+      - name: shellcheck bin/kunskap + hooks
+        run: |
+          shellcheck -e SC1090,SC1091 bin/kunskap hooks/session-start.sh hooks/session-end.sh
+          shellcheck hooks/_shared.sh
+
+      # ---------- bin/kunskap surface health ----------
+
+      - name: bin/kunskap version matches manifest
+        run: |
+          manifest=$(jq -r .version .claude-plugin/plugin.json)
+          out=$(./bin/kunskap version)
+          [[ "$out" == "kunskap $manifest" ]] \
+            || { echo "drift: bin says '$out', plugin.json says '$manifest'"; exit 1; }
+
+      - name: bin/kunskap help advertises lint (P4 surface)
+        run: |
+          ./bin/kunskap help | grep -q 'kunskap lint'
+          ./bin/kunskap help | grep -q 'Read-only'
+          ./bin/kunskap help | grep -q 'git status --porcelain'
+
+      # ---------- agents/linter.md shape ----------
+
+      - name: agents/linter.md exists with read-only frontmatter contract
+        run: |
+          [[ -f agents/linter.md ]] || { echo "agents/linter.md missing"; exit 1; }
+          grep -E '^name: linter$'           agents/linter.md
+          grep -E '^model: opus$'            agents/linter.md
+          grep -E '^tools: '                 agents/linter.md
+          grep -E '^disallowedTools:.*Write' agents/linter.md
+          grep -E '^disallowedTools:.*Edit'  agents/linter.md
+          # Plugin agents do not support these — refuse to ship if they sneak in.
+          ! grep -E '^permissionMode:' agents/linter.md
+          ! grep -E '^hooks:'          agents/linter.md
+          ! grep -E '^mcpServers:'     agents/linter.md
+
+      # ---------- commands/ surface ----------
+
+      - name: commands/lint.md exists and declares argument-hint
+        run: |
+          [[ -f commands/lint.md ]]
+          grep -q '^argument-hint:' commands/lint.md
+          grep -q '^description:'   commands/lint.md
+
+      # ---------- bats suites ----------
+
+      # P1 §7: dynamic counts; never encoded in step names.
+      - name: list test counts
+        run: |
+          for f in tests/contract/*.bats; do
+            n=$(grep -c '^@test ' "$f")
+            printf '  %-35s %d cases\n' "$(basename "$f")" "$n"
+          done
+
+      - name: bats — linter static prompt-contract (P4)
+        run: bats tests/contract/linter-static-prompt.bats
+
+      - name: bats — lint CLI surface (P4)
+        run: bats tests/contract/lint-cli.bats
+
+      - name: bats — linter behavioral (skipped without KUNSKAP_LIVE_TESTS=1)
+        run: bats tests/contract/linter-behavioral.bats
+
+      # P3 regression block: keep prior phases green.
+      - name: bats — P1 static prompt-contract (regression)
+        run: bats tests/contract/static-prompt.bats
+
+      - name: bats — P1 CLI surface (regression)
+        run: bats tests/contract/cli-surface.bats
+
+      - name: bats — P1 behavioral (skipped without KUNSKAP_LIVE_TESTS=1)
+        run: bats tests/contract/behavioral.bats
+
+      - name: bats — P2 learn CLI surface (regression)
+        run: bats tests/contract/learn-cli.bats
+
+      - name: bats — P2 config get + global --vault (regression)
+        run: bats tests/contract/config-cli.bats
+
+      - name: bats — P2 hooks fail-soft smoke (regression)
+        run: bats tests/contract/hooks-smoke.bats
+
+      - name: bats — P3 init CLI surface (regression)
+        run: bats tests/contract/init-cli.bats
+
+      - name: bats — P3 drafts CLI surface (regression)
+        run: bats tests/contract/drafts-cli.bats
+
+      # ---------- end-to-end: init → lint preflight surfaces (no LLM) ----------
+
+      - name: e2e — init produces a lint-runnable vault
+        run: |
+          # Hard contract for P4: a freshly-init'd vault must satisfy the
+          # lint preflight (vault validation passes; only claude-on-PATH
+          # would gate the actual agent run).
+          tmp="$(mktemp -d)/vault"
+          KUNSKAP_AUTO_CONFIRM=1 ./bin/kunskap init "$tmp" --name "CI Smoke"
+          # Without claude on PATH, lint should fail at the claude-PATH check
+          # AFTER vault validation + agent-file check passed (P1 §5 ordering).
+          if PATH="/usr/bin:/bin" ./bin/kunskap lint --vault "$tmp" 2>&1 | tee /tmp/lint.out; then
+            echo "expected non-zero exit when claude is not on PATH"; exit 1
+          fi
+          grep -q 'claude' /tmp/lint.out
+          # Vault must remain unmodified by the failed preflight.
+          ( cd "$tmp" && git add . && git -c user.email=ci@k -c user.name=ci commit -q -m seed )
+          before="$(git -C "$tmp" status --porcelain)"
+          PATH="/usr/bin:/bin" ./bin/kunskap lint --vault "$tmp" 2>/dev/null || true
+          after="$(git -C "$tmp" status --porcelain)"
+          [[ "$before" == "$after" ]] || { echo "lint mutated vault on failed preflight"; exit 1; }
+
+      # ---------- drift lint (P1 vault learning §7, P2 §8, P3 §8) ----------
+
+      - name: CHANGELOG/README contain no hardcoded test counts
+        run: |
+          if grep -nE '\([0-9]+ tests?\)' CHANGELOG.md README.md 2>/dev/null; then
+            echo "drift: hardcoded test count in CHANGELOG/README — remove or compute it dynamically"
+            exit 1
+          fi
+
+      - name: CHANGELOG/README do not name retired CI workflow files
+        run: |
+          if grep -nE 'validate\.yml' CHANGELOG.md README.md 2>/dev/null; then
+            echo "drift: CHANGELOG/README references retired validate.yml"
+            exit 1
+          fi

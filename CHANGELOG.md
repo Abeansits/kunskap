@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.4.0 — 2026-05-05 — P4 linter agent
+
+- `agents/linter.md` — read-only health-check agent (Karpathy "Linting"). Frontmatter: `model: opus`, `tools: Read, Bash, Glob, Grep`, `disallowedTools: WebFetch, WebSearch, Write, Edit`. The Write/Edit denial is the read-only invariant in code: the curator owns the wiki, the linter only audits.
+- `commands/lint.md` + `bin/kunskap lint [--vault <abs-path>] [--format text|json]` — vault resolves from `--vault`, then the project marker (`.claude/kunskap.json`). Spawns the agent headlessly via `claude --plugin-dir` (P1 §2 lesson — directive prompt naming the agent, not slash invocation).
+- Six MUST clauses for the linter, each fingerprint-tested in `linter-static-prompt.bats`: `[DRIFT]` across articles, `[STUB-CLUSTER]` for 3+-ref orphans (2-ref is curator territory), `[DRAFT-STALE]` (≥7d created) + `[DRAFT-DEFERRED-STALE]` (≥14d deferred), `[OFFLINE-ARRIVAL]` (Risk #4 — author not seen in `_meta/last-run.json#curator.by` for ≥48h), `[CURATOR-IDLE]` (`ran_at` ≥48h ago), `[IDENTITY-MISMATCH]` (committers in `git log --since=30.days.ago` not declared as `roles.<role>.primary`).
+- Read-only invariant enforced **at the CLI boundary**: bin/kunskap snapshots `git status --porcelain` BEFORE the agent spawn (so a pre-existing dirty vault isn't blamed) and compares post-run; non-equal → distinct exit code 2 with a stderr diff.
+- Output format: `[TYPE] path | message` lines grouped by severity in text mode; `--format json` emits a single `{findings: [...]}` object with `{type, severity, path, message, suggested_action}` records and always exits 0 (the JSON IS the output). Text mode exits 0 when no findings, 1 when findings present (so cron / CI can use the exit code as a vault-health signal).
+- `linter-static-prompt.bats`, `lint-cli.bats`, `linter-behavioral.bats` (gated `KUNSKAP_LIVE_TESTS=1`) — every linter MUST clause maps to a fingerprint test (P1 §1 safety net), every CLI surface (arg parsing, marker fallback, agent-file preflight, symlink shim, exit-code semantics) is exercised, every finding type has a behavioral assertion against a seeded scenario vault.
+- Linter system prompt encodes the canonical anchor-to-NR==1 awk recipe for frontmatter parsing (P3 §1+§2 lessons — never use sed range patterns; many `wiki/**/*.md` files reads benefit) and the v0 §6 stub-discovery grep recipe verbatim.
+- CI `.github/workflows/p4.yml`: shellcheck, manifest-version drift check, agent + command frontmatter shape, dynamic test-count printout, full bats regression suite, end-to-end `init → lint preflight` smoke (vault remains unmodified on failed preflight — read-only contract holds even when `claude` isn't on PATH).
+- `bin/kunskap version` bumps to `0.4.0`.
+
 ## v0.3.0 — 2026-05-05 — P3 vault bootstrap + drafts surface
 
 - `bin/kunskap init <path> [--shared <git-remote>] [--name <human-readable>] [--force] [--yes]` (per design §Q3). Self-state checks before external (P1 §5 lesson): validates target before requiring `git` on PATH or the template dir. Existing non-empty target requires `--force` plus interactive confirmation (Risk #7 — labeled `PATH:` / `ENTRIES:` summary so wrong-path mistakes are obvious). `KUNSKAP_AUTO_CONFIRM=1` and `--yes` bypass the prompt for scripts.

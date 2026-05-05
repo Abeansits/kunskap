@@ -4,7 +4,7 @@ Knowledge-base plugin for Claude Code. Sessions write loose notes into an inbox;
 
 ## Status
 
-**v0.3.0 — P3 vault bootstrap + drafts surface.** Adds `kunskap init <path>` (full `templates/vault-init/` scaffold), `commands/drafts.md` + `bin/kunskap drafts list | show | approve | reject | defer` (port of the conductor `/drafts` surface), and locks the `_drafts/<topic-slug>--<iso-date>.md` naming convention in the curator prompt. P0 → P3 is the MVP.
+**v0.4.0 — P4 linter agent.** Adds `agents/linter.md` (read-only Karpathy "Linting" — drift across articles, stub-cluster suggestions, draft staleness, offline-machine arrivals per Risk #4, curator-idle, identity-mismatch), `commands/lint.md`, and `bin/kunskap lint [--vault <abs-path>] [--format text|json]`. The linter is forbidden from writing to the vault; the CLI verifies `git status --porcelain` snapshots are equal before/after the agent run. Exit codes: `0` = no findings, `1` = findings present, `2` = read-only invariant violation.
 
 The phased rollout (P0 → P6) is in [`docs/kunskap-design.md`](docs/kunskap-design.md). The MVP is P0 → P3.
 
@@ -78,11 +78,11 @@ Full design: [`docs/kunskap-design.md`](docs/kunskap-design.md). Phased rollout 
 
 | PR | Scope |
 |---|---|
-| **P0 (this release)** | Plugin manifest, `bin/kunskap` with `version` / `config user` / `whoami`, stub skill + command, CI. |
+| **P0** | Plugin manifest, `bin/kunskap` with `version` / `config user` / `whoami`, stub skill + command, CI. |
 | **P1** | Curator agent + manual trigger + curator-contract tests. |
 | **P2** | `/kunskap:learn enable\|disable\|status` + `SessionStart` / `SessionEnd` sync hooks. |
 | **P3** | `kunskap init <vault-path>` + drafts surface (list/show/approve/reject/defer). MVP complete. |
-| **P4** | Linter agent + health checks. |
+| **P4 (this release)** | Linter agent + health checks (drift, stub clusters, draft staleness, offline arrivals, curator-idle, identity-mismatch). Read-only contract. |
 | **P5** | Single-primary role assignment (`_meta/roles.toml`). |
 | **P6** | Search (`kunskap recall`) + marketplace listing + polish. |
 

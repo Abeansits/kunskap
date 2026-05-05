@@ -4,9 +4,10 @@
 REPO_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)"
 KUNSKAP_BIN="$REPO_ROOT/bin/kunskap"
 CURATOR_AGENT="$REPO_ROOT/agents/curator.md"
+LINTER_AGENT="$REPO_ROOT/agents/linter.md"
 FIXTURE_VAULT="$REPO_ROOT/tests/fixtures/curator-vault"
 
-export REPO_ROOT KUNSKAP_BIN CURATOR_AGENT FIXTURE_VAULT
+export REPO_ROOT KUNSKAP_BIN CURATOR_AGENT LINTER_AGENT FIXTURE_VAULT
 
 # Copy the fixture vault to a fresh temp dir, init it as a git repo with a
 # single seed commit, and echo the temp path. Tests should rm -rf on teardown.
@@ -26,9 +27,17 @@ make_temp_vault() {
 }
 
 # grep -F (literal) for an expected clause in the curator agent prompt.
-# Used by static prompt-drift tests.
+# Used by static prompt-drift tests. The `--` terminates option parsing so
+# fingerprints starting with `--` (flag examples like `--format json`) match.
 prompt_contains() {
-  grep -Fq "$1" "$CURATOR_AGENT"
+  grep -Fq -- "$1" "$CURATOR_AGENT"
+}
+
+# Mirror of prompt_contains for the linter agent — kept as a separate helper
+# (rather than parameterizing prompt_contains) so static-prompt tests are
+# explicit about which agent's contract they protect.
+linter_prompt_contains() {
+  grep -Fq -- "$1" "$LINTER_AGENT"
 }
 
 make_temp_proj() { mktemp -d -t kunskap-proj.XXXXXX; }
