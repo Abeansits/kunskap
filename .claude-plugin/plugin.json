@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "kunskap",
+  "version": "0.0.1",
+  "description": "Knowledge-base plugin for Claude Code. Curate session learnings into an Obsidian-style wiki shared across machines and humans. (Vigil/Sigil/Ting/Kunskap family.)",
+  "author": {
+    "name": "Sebastian Nystrom",
+    "url": "https://github.com/Abeansits"
+  },
+  "repository": "https://github.com/Abeansits/kunskap",
+  "license": "MIT",
+  "keywords": [
+    "knowledge-base",
+    "obsidian",
+    "vault",
+    "curation",
+    "claude-code-plugin"
+  ]
+}

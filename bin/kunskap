@@ -1,0 +1,157 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+VERSION="0.0.1"
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/kunskap"
+IDENTITY_FILE="$CONFIG_DIR/identity.toml"
+
+die() { echo "kunskap: $*" >&2; exit 1; }
+
+cmd_help() {
+  cat <<EOF
+kunskap $VERSION — knowledge-base plugin
+
+Usage:
+  kunskap version | --version
+  kunskap help    | --help
+  kunskap config user --name <lowercase-slug> [--email <addr>] [--host <host>]
+  kunskap config show
+  kunskap whoami [--quiet]
+
+Notes:
+  --host is recommended on \`config user\`. Without it, host derives from
+  \`hostname -s\` which mutates on machine renames and silently breaks role
+  checks at P5. See docs/kunskap-design.md §Q5 (Identity bootstrapping)
+  and Risk #5 (Identity fragility).
+EOF
+}
+
+write_identity() {
+  local name="$1" email="$2" host="$3"
+  mkdir -p "$CONFIG_DIR"
+  {
+    echo "# kunskap identity — written by \`kunskap config user\`. Edit by hand if needed."
+    echo "[user]"
+    echo "name  = \"$name\""
+    [[ -n "$email" ]] && echo "email = \"$email\""
+    echo "host  = \"$host\""
+  } > "$IDENTITY_FILE"
+}
+
+read_identity_field() {
+  local field="$1"
+  [[ -f "$IDENTITY_FILE" ]] || return 1
+  awk -v f="$field" '
+    /^\[user\]/ { in_user = 1; next }
+    /^\[/       { in_user = 0; next }
+    in_user && $1 == f {
+      sub(/^[^=]*=[[:space:]]*"/, "")
+      sub(/"[[:space:]]*$/, "")
+      print
+      exit
+    }
+  ' "$IDENTITY_FILE"
+}
+
+# --name is lowercase-only to pre-empt Paul/paul collisions in the P5
+# role-check (identity-string = <name>@<host>); --host stays mixed-case
+# because `hostname -s` commonly returns capitalized values.
+validate_name() {
+  [[ "$1" =~ ^[a-z][a-z0-9._-]{0,63}$ ]] \
+    || die "--name must match [a-z][a-z0-9._-]{0,63} (lowercase); got: $1"
+}
+validate_host() {
+  [[ "$1" =~ ^[a-zA-Z0-9._-]{1,64}$ ]] \
+    || die "--host must match [a-zA-Z0-9._-]{1,64}; got: $1"
+}
+validate_email() {
+  [[ "$1" != *['"'\\$'\n']* ]] \
+    || die "--email must not contain quote, backslash, or newline; got: $1"
+}
+
+# Validates the value following a flag. Rejects missing, empty, and
+# `-`-prefixed values (the last would silently swallow the next flag —
+# Pass-2 bug: `--host --email <addr>` parsed host=`--email`).
+# Called outside command substitution so `die` exits the script (bash
+# quirk: var=$(die …) does NOT propagate exit under set -e).
+require_value() {
+  local flag="$1" next="$2"
+  [[ "$next" != "__MISSING__" ]] || die "config user: $flag requires a value"
+  [[ -n "$next" ]]                || die "config user: $flag requires a non-empty value"
+  [[ "$next" != -* ]]             || die "config user: $flag requires a value (got next flag: $next)"
+}
+
+cmd_config_user() {
+  local name="" email="" host=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --name)  require_value --name  "${2-__MISSING__}"; name="$2";  shift 2 ;;
+      --email) require_value --email "${2-__MISSING__}"; email="$2"; shift 2 ;;
+      --host)  require_value --host  "${2-__MISSING__}"; host="$2";  shift 2 ;;
+      *) die "unknown flag for \`config user\`: $1" ;;
+    esac
+  done
+
+  [[ -n "$name" ]] || die "config user: --name <slug> is required"
+  validate_name "$name"
+  [[ -z "$email" ]] || validate_email "$email"
+  [[ -z "$host" ]] || validate_host "$host"
+
+  if [[ -z "$host" ]]; then
+    host="$(hostname -s)"
+    echo "kunskap: host derived from \`hostname -s\` ($host); explicit --host recommended for stable role-checks (see Risk #5)." >&2
+  fi
+
+  write_identity "$name" "$email" "$host"
+  echo "kunskap: identity written to $IDENTITY_FILE ($name@$host)"
+}
+
+cmd_config_show() {
+  [[ $# -eq 0 ]] || die "config show: takes no arguments (got: $*)"
+  [[ -f "$IDENTITY_FILE" ]] || die "no identity at $IDENTITY_FILE — run \`kunskap config user --name <slug>\`"
+  cat "$IDENTITY_FILE"
+}
+
+cmd_config() {
+  local sub="${1:-}"
+  shift || true
+  case "$sub" in
+    user) cmd_config_user "$@" ;;
+    show) cmd_config_show "$@" ;;
+    "")   die "config: subcommand required (user | show)" ;;
+    *)    die "config: unknown subcommand: $sub" ;;
+  esac
+}
+
+cmd_whoami() {
+  local quiet=false
+  if [[ "${1:-}" == "--quiet" ]]; then
+    quiet=true
+    shift
+  fi
+  [[ $# -eq 0 ]] || die "whoami: takes no positional arguments (got: $*)"
+  local name host
+  if ! name="$(read_identity_field name)" || [[ -z "$name" ]]; then
+    $quiet || echo "kunskap: identity not set — run \`kunskap config user --name <slug>\`" >&2
+    exit 1
+  fi
+  if ! host="$(read_identity_field host)" || [[ -z "$host" ]]; then
+    $quiet || echo "kunskap: identity missing host — re-run \`kunskap config user\`" >&2
+    exit 1
+  fi
+  $quiet || echo "$name@$host"
+}
+
+main() {
+  local cmd="${1:-help}"
+  shift || true
+  case "$cmd" in
+    version|--version) echo "kunskap $VERSION" ;;
+    help|--help|-h)    cmd_help ;;
+    config)            cmd_config "$@" ;;
+    whoami)            cmd_whoami "$@" ;;
+    *) die "unknown subcommand: $cmd (try \`kunskap help\`)" ;;
+  esac
+}
+
+main "$@"

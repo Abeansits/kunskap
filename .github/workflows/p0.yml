@@ -1,0 +1,122 @@
+name: P0 — manifest + CLI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash -euo pipefail {0}
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: shellcheck bin/kunskap
+        run: shellcheck -e SC1090,SC1091 bin/kunskap
+
+      - name: parse plugin.json
+        run: jq empty .claude-plugin/plugin.json
+
+      - name: required + expected manifest fields
+        run: |
+          for field in name version description author license; do
+            jq -e ". | has(\"$field\")" .claude-plugin/plugin.json >/dev/null \
+              || { echo "missing field: $field"; exit 1; }
+          done
+          jq -e '.author.name | type == "string"' .claude-plugin/plugin.json >/dev/null \
+            || { echo "author.name missing or not a string"; exit 1; }
+          name=$(jq -r .name .claude-plugin/plugin.json)
+          [[ "$name" =~ ^[a-z][a-z0-9-]*$ ]] \
+            || { echo "name '$name' is not kebab-case lowercase"; exit 1; }
+          echo "manifest OK: $name $(jq -r .version .claude-plugin/plugin.json)"
+
+      - name: bin/kunskap is executable
+        run: test -x bin/kunskap
+
+      - name: version
+        run: |
+          out=$(./bin/kunskap version)
+          [[ "$out" == "kunskap 0.0.1" ]] || { echo "got: $out"; exit 1; }
+
+      - name: help exits 0
+        run: ./bin/kunskap help >/dev/null
+
+      - name: whoami without identity is silent and non-zero under --quiet
+        run: |
+          rc=0; out=$(./bin/kunskap whoami --quiet 2>&1) || rc=$?
+          [[ $rc -ne 0 ]] || { echo "expected non-zero exit; got $rc"; exit 1; }
+          [[ -z "$out" ]] || { echo "expected silent; got: $out"; exit 1; }
+
+      - name: config user round-trips through whoami
+        run: |
+          ./bin/kunskap config user --name ci --email ci@example.com --host runner
+          out=$(./bin/kunskap whoami)
+          [[ "$out" == "ci@runner" ]] || { echo "got: $out"; exit 1; }
+
+      - name: config show prints identity file
+        run: |
+          show=$(./bin/kunskap config show)
+          echo "$show" | grep -q '^name  = "ci"$'
+          echo "$show" | grep -q '^host  = "runner"$'
+
+      - name: config user without --host emits Risk #5 warning
+        run: |
+          stderr=$(./bin/kunskap config user --name ci 2>&1 >/dev/null)
+          echo "$stderr" | grep -q "explicit --host recommended" \
+            || { echo "expected Risk #5 warning; got: $stderr"; exit 1; }
+
+      - name: rejects bogus --name
+        run: |
+          rc=0; ./bin/kunskap config user --name "not a slug" 2>/dev/null || rc=$?
+          [[ $rc -ne 0 ]] || { echo "expected non-zero exit; got $rc"; exit 1; }
+
+      - name: rejects uppercase --name (Paul/paul collision pre-empt)
+        run: |
+          rc=0; stderr=$(./bin/kunskap config user --name Paul --host runner 2>&1 >/dev/null) || rc=$?
+          [[ $rc -ne 0 ]] || { echo "expected non-zero exit"; exit 1; }
+          echo "$stderr" | grep -q "lowercase" \
+            || { echo "expected lowercase msg; got: $stderr"; exit 1; }
+
+      - name: --name missing value gives a helpful error (not silent set -e)
+        run: |
+          rc=0; stderr=$(./bin/kunskap config user --name 2>&1 >/dev/null) || rc=$?
+          [[ $rc -ne 0 ]] || { echo "expected non-zero exit"; exit 1; }
+          echo "$stderr" | grep -q "requires a value" \
+            || { echo "expected 'requires a value' msg; got: $stderr"; exit 1; }
+
+      - name: rejects --email containing quotes (TOML integrity)
+        run: |
+          rc=0; stderr=$(./bin/kunskap config user --name ci --host runner --email 'a"b@x' 2>&1 >/dev/null) || rc=$?
+          [[ $rc -ne 0 ]] || { echo "expected non-zero exit"; exit 1; }
+          echo "$stderr" | grep -q "quote, backslash, or newline" \
+            || { echo "expected email-quote msg; got: $stderr"; exit 1; }
+
+      - name: rejects flag-as-value (--host swallowing --email — Pass-2 block-ship)
+        run: |
+          rc=0; stderr=$(./bin/kunskap config user --name foo --host --email 2>&1 >/dev/null) || rc=$?
+          [[ $rc -ne 0 ]] || { echo "expected non-zero exit"; exit 1; }
+          echo "$stderr" | grep -q "got next flag: --email" \
+            || { echo "expected next-flag msg; got: $stderr"; exit 1; }
+
+      - name: whoami rejects unexpected positional args
+        run: |
+          rc=0; stderr=$(./bin/kunskap whoami extra 2>&1 >/dev/null) || rc=$?
+          [[ $rc -ne 0 ]] || { echo "expected non-zero exit"; exit 1; }
+          echo "$stderr" | grep -q "no positional arguments" \
+            || { echo "expected positional msg; got: $stderr"; exit 1; }
+          rc=0; stderr=$(./bin/kunskap whoami --quiet extra 2>&1 >/dev/null) || rc=$?
+          [[ $rc -ne 0 ]] || { echo "expected non-zero exit on --quiet+extra"; exit 1; }
+
+      - name: config show rejects unexpected args
+        run: |
+          rc=0; stderr=$(./bin/kunskap config show extra 2>&1 >/dev/null) || rc=$?
+          [[ $rc -ne 0 ]] || { echo "expected non-zero exit"; exit 1; }
+          echo "$stderr" | grep -q "takes no arguments" \
+            || { echo "expected no-args msg; got: $stderr"; exit 1; }
