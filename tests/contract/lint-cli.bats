@@ -236,14 +236,10 @@ teardown() {
   # Pass-1 block-ship: `if ! cmd; then x=$?; fi` returns 0 (status of !),
   # losing the real failure code. The correct form is `if cmd; then 0;
   # else x=$?; fi`. Source-grep for the corrected pattern in cmd_lint.
-  awk '/^cmd_lint\(\)/{flag=1} flag{print} /^}$/ && flag{flag=0; exit}' "$KUNSKAP_BIN" \
-    | grep -q 'if agent_out='
-  awk '/^cmd_lint\(\)/{flag=1} flag{print} /^}$/ && flag{flag=0; exit}' "$KUNSKAP_BIN" \
-    | grep -q 'else'
-  awk '/^cmd_lint\(\)/{flag=1} flag{print} /^}$/ && flag{flag=0; exit}' "$KUNSKAP_BIN" \
-    | grep -q 'agent_status=\$?'
-  ! awk '/^cmd_lint\(\)/{flag=1} flag{print} /^}$/ && flag{flag=0; exit}' "$KUNSKAP_BIN" \
-    | grep -q 'if ! agent_out='
+  fn_body cmd_lint | grep -q 'if agent_out='
+  fn_body cmd_lint | grep -q 'else'
+  fn_body cmd_lint | grep -q 'agent_status=\$?'
+  ! fn_body cmd_lint | grep -q 'if ! agent_out='
 }
 
 @test "bin/kunskap exit-code semantics are encoded (json→0, text-with-findings→1, invariant-violation→2)" {

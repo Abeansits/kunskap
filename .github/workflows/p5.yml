@@ -207,16 +207,21 @@ jobs:
           while IFS= read -r line; do linter_fp+=("$line"); done \
             < <(extract_one linter_prompt_contains tests/contract/linter-static-prompt.bats)
           collisions=0
+          # O(n²/2): each unordered pair checked once, both directions
+          # tested in the same iteration since substring is asymmetric.
           check() {
             local label="$1"; shift
             local arr=("$@")
             local i j a b
             for ((i = 0; i < ${#arr[@]}; i++)); do
-              for ((j = 0; j < ${#arr[@]}; j++)); do
-                [[ $i -eq $j ]] && continue
+              for ((j = i + 1; j < ${#arr[@]}; j++)); do
                 a="${arr[$i]}"; b="${arr[$j]}"
-                [[ -z "$a" || -z "$b" ]] && continue
-                if [[ "$b" == *"$a"* && "$a" != "$b" ]]; then
+                [[ -z "$a" || -z "$b" || "$a" == "$b" ]] && continue
+                if [[ "$a" == *"$b"* ]]; then
+                  echo "[$label] collision: \"$b\" is a substring of \"$a\""
+                  collisions=$((collisions + 1))
+                fi
+                if [[ "$b" == *"$a"* ]]; then
                   echo "[$label] collision: \"$a\" is a substring of \"$b\""
                   collisions=$((collisions + 1))
                 fi

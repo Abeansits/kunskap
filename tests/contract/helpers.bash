@@ -133,6 +133,16 @@ cleanup_temp_dirs() {
   done
 }
 
+# Extract the body of a top-level bash function from $KUNSKAP_BIN. Used by
+# CLI-shape tests that grep for source-level invariants (e.g. "cmd_lint
+# returns 2 on disallowed paths"). Anchored on `^cmd_NAME()` opening + the
+# first lone `}` line — assumes the project's existing brace style. P5
+# extracts because four test files (lint-cli, role-cli, last-run-cli, plus
+# anything P6+ adds) had identical awk one-liners.
+fn_body() {
+  awk -v fn="^$1\\(\\)" '$0 ~ fn {flag=1} flag {print} flag && /^}$/ {exit}' "$KUNSKAP_BIN"
+}
+
 # Write identity.toml directly (skips a `kunskap config user` fork — used in
 # hot setup paths like hooks-smoke.bats that need identity but not its CLI).
 write_identity_toml() {

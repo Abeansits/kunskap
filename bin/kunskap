@@ -437,10 +437,8 @@ cmd_learn_status() {
   echo "STATUS: ${enabled:-unknown}"
   echo "VAULT:  ${vault:-<unset>}"
 
-  local identity name host
-  if name="$(read_identity_field name 2>/dev/null)" && [[ -n "$name" ]] \
-     && host="$(read_identity_field host 2>/dev/null)" && [[ -n "$host" ]]; then
-    identity="$name@$host"
+  local identity=""
+  if identity="$(compute_identity_string 2>/dev/null)"; then
     echo "IDENTITY: $identity"
   else
     identity=""
@@ -473,18 +471,14 @@ cmd_learn_status() {
   # role primary in any roles.toml section, status confirms; mismatch warns.
   local roles_file="$vault/_meta/roles.toml"
   if [[ -n "$identity" && -f "$roles_file" ]]; then
-    local matched=""
-    for role in curator linter; do
-      local primary
-      primary="$(read_toml_field "$roles_file" "roles.$role" primary 2>/dev/null || true)"
-      [[ "$primary" == "$identity" ]] && matched="$matched $role"
-    done
+    local cur lin matched=""
+    cur="$(read_toml_field "$roles_file" roles.curator primary 2>/dev/null || true)"
+    lin="$(read_toml_field "$roles_file" roles.linter  primary 2>/dev/null || true)"
+    [[ "$cur" == "$identity" ]] && matched="$matched curator"
+    [[ "$lin" == "$identity" ]] && matched="$matched linter"
     if [[ -n "$matched" ]]; then
       echo "ROLE-CHECK: primary for$matched"
     else
-      local cur lin
-      cur="$(read_toml_field "$roles_file" roles.curator primary 2>/dev/null || true)"
-      lin="$(read_toml_field "$roles_file" roles.linter  primary 2>/dev/null || true)"
       echo "ROLE-CHECK: not primary (curator: ${cur:-<unset>}; linter: ${lin:-<unset>})"
     fi
   elif [[ -n "$identity" ]]; then
@@ -619,10 +613,8 @@ cmd_lint() {
   [[ -f "$root/agents/linter.md" ]] \
     || die "lint: linter agent not found at $root/agents/linter.md (plugin_root resolved to $root; set CLAUDE_PLUGIN_ROOT to override)"
 
-  # Mid-rebase / merge / cherry-pick guard (P2 §3 lesson): if the vault
-  # is in the middle of a git rewrite, the read-only invariant check
-  # would false-positive (porcelain shifts as rebase steps land). Refuse
-  # with an actionable message rather than emit confusing diff output.
+  # Mid-rebase guard fires before role-check + claude-PATH so the user
+  # hears about vault wedge state on hosts without claude installed.
   mid_rebase_guard "$vault" lint
 
   # Role check (P5): linter primary or --force. Missing/TBD primary warns
@@ -692,8 +684,6 @@ Do NOT attempt the audit yourself; the linter subagent must own it. Do NOT write
     if [[ "$status_before" != "$status_after" || "$head_before" != "$head_after" ]]; then
       local violations=()
 
-      # Commit-side: every path touched between head_before and head_after
-      # must be exactly _meta/last-run.json.
       if [[ "$head_before" != "$head_after" && -n "$head_before" ]]; then
         local p
         while IFS= read -r p; do
@@ -702,9 +692,8 @@ Do NOT attempt the audit yourself; the linter subagent must own it. Do NOT write
         done < <(git -C "$vault" log --name-only --pretty=format: "$head_before..$head_after" 2>/dev/null | sort -u)
       fi
 
-      # Working-tree side: any porcelain entry that wasn't there before AND
-      # isn't `_meta/last-run.json`. Porcelain format is `XY <path>` (3-char
-      # status prefix); strip and compare against the whitelist.
+      # Porcelain format is `XY <path>` (3-char status prefix); strip
+      # and compare new entries against the whitelist.
       local line p
       while IFS= read -r line; do
         [[ -z "$line" ]] && continue

@@ -12,34 +12,27 @@ load helpers
 # ---------- source surface (catches refactor regressions) ----------
 
 @test "cmd_lint whitelist mentions _meta/last-run.json by name" {
-  awk '/^cmd_lint\(\)/{flag=1} flag{print} /^}$/ && flag{flag=0; exit}' "$KUNSKAP_BIN" \
-    | grep -q '"_meta/last-run.json"'
+  fn_body cmd_lint | grep -q '"_meta/last-run.json"'
 }
 
 @test "cmd_lint whitelist comment names P5 + the SOLE permitted exception" {
-  awk '/^cmd_lint\(\)/{flag=1} flag{print} /^}$/ && flag{flag=0; exit}' "$KUNSKAP_BIN" \
-    | grep -q 'P5'
-  awk '/^cmd_lint\(\)/{flag=1} flag{print} /^}$/ && flag{flag=0; exit}' "$KUNSKAP_BIN" \
-    | grep -q 'SOLE'
+  fn_body cmd_lint | grep -q 'P5'
+  fn_body cmd_lint | grep -q 'SOLE'
 }
 
 @test "cmd_lint whitelist enumerates BOTH commit-side AND porcelain-side touched paths" {
   # Both paths must be checked — a write+commit cycle bypasses pure-porcelain
   # whitelisting (P4 §3 head-oid lesson).
-  awk '/^cmd_lint\(\)/{flag=1} flag{print} /^}$/ && flag{flag=0; exit}' "$KUNSKAP_BIN" \
-    | grep -q 'log --name-only'
-  awk '/^cmd_lint\(\)/{flag=1} flag{print} /^}$/ && flag{flag=0; exit}' "$KUNSKAP_BIN" \
-    | grep -q 'comm -13'   # diff before/after porcelain
+  fn_body cmd_lint | grep -q 'log --name-only'
+  fn_body cmd_lint | grep -q 'comm -13'   # diff before/after porcelain
 }
 
 @test "cmd_lint whitelist returns exit 2 (invariant violation) on disallowed path" {
-  awk '/^cmd_lint\(\)/{flag=1} flag{print} /^}$/ && flag{flag=0; exit}' "$KUNSKAP_BIN" \
-    | grep -q 'return 2'
+  fn_body cmd_lint | grep -q 'return 2'
 }
 
 @test "cmd_lint emits a stderr message naming the disallowed paths in the diagnostic" {
-  awk '/^cmd_lint\(\)/{flag=1} flag{print} /^}$/ && flag{flag=0; exit}' "$KUNSKAP_BIN" \
-    | grep -q 'Disallowed paths touched'
+  fn_body cmd_lint | grep -q 'Disallowed paths touched'
 }
 
 # ---------- agent-prompt-side: linter MUST 9 + curator step 6 ----------
@@ -72,25 +65,19 @@ load helpers
 # ---------- directive prompt threads identity + head_before + forced ----------
 
 @test "cmd_curate directive prompt threads identity to the curator agent" {
-  awk '/^cmd_curate\(\)/{flag=1} flag{print} /^}$/ && flag{flag=0; exit}' "$KUNSKAP_BIN" \
-    | grep -q 'by: \\"\$identity\\"'
+  fn_body cmd_curate | grep -q 'by: \\"\$identity\\"'
 }
 
 @test "cmd_curate directive prompt threads head_before from rev-parse HEAD" {
-  awk '/^cmd_curate\(\)/{flag=1} flag{print} /^}$/ && flag{flag=0; exit}' "$KUNSKAP_BIN" \
-    | grep -q 'head_before='
-  awk '/^cmd_curate\(\)/{flag=1} flag{print} /^}$/ && flag{flag=0; exit}' "$KUNSKAP_BIN" \
-    | grep -q 'rev-parse HEAD'
+  fn_body cmd_curate | grep -q 'head_before='
+  fn_body cmd_curate | grep -q 'rev-parse HEAD'
 }
 
 @test "cmd_curate directive prompt threads forced (true|false) for audit trail" {
-  awk '/^cmd_curate\(\)/{flag=1} flag{print} /^}$/ && flag{flag=0; exit}' "$KUNSKAP_BIN" \
-    | grep -q 'forced_json'
+  fn_body cmd_curate | grep -q 'forced_json'
 }
 
 @test "cmd_lint directive prompt threads identity + forced for the run-record" {
-  awk '/^cmd_lint\(\)/{flag=1} flag{print} /^}$/ && flag{flag=0; exit}' "$KUNSKAP_BIN" \
-    | grep -q 'by: \\"\$identity\\"'
-  awk '/^cmd_lint\(\)/{flag=1} flag{print} /^}$/ && flag{flag=0; exit}' "$KUNSKAP_BIN" \
-    | grep -q 'forced: \$forced_json'
+  fn_body cmd_lint | grep -q 'by: \\"\$identity\\"'
+  fn_body cmd_lint | grep -q 'forced: \$forced_json'
 }

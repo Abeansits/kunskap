@@ -239,13 +239,11 @@ EOF
 }
 
 @test "cmd_curate calls check_role for the curator role" {
-  awk '/^cmd_curate\(\)/{flag=1} flag{print} /^}$/ && flag{flag=0; exit}' "$KUNSKAP_BIN" \
-    | grep -q 'check_role "$vault" curator'
+  fn_body cmd_curate | grep -q 'check_role "$vault" curator'
 }
 
 @test "cmd_lint calls check_role for the linter role" {
-  awk '/^cmd_lint\(\)/{flag=1} flag{print} /^}$/ && flag{flag=0; exit}' "$KUNSKAP_BIN" \
-    | grep -q 'check_role "$vault" linter'
+  fn_body cmd_lint | grep -q 'check_role "$vault" linter'
 }
 
 # ---------- CWD-fix (P4 §2 sandbox-CWD bug → P5 priority fix) ----------
@@ -253,18 +251,14 @@ EOF
 @test "cmd_curate cd's into the vault before spawning claude (P4 §2 fix)" {
   # The CWD-fix is the load-bearing P5 implementation change alongside the
   # role check — ensure cmd_curate sets vault as CWD before exec'ing claude.
-  awk '/^cmd_curate\(\)/{flag=1} flag{print} /^}$/ && flag{flag=0; exit}' "$KUNSKAP_BIN" \
-    | grep -q 'cd "$vault"'
+  fn_body cmd_curate | grep -q 'cd "$vault"'
 }
 
 @test "cmd_lint runs claude with vault as CWD (sandbox covers vault)" {
-  awk '/^cmd_lint\(\)/{flag=1} flag{print} /^}$/ && flag{flag=0; exit}' "$KUNSKAP_BIN" \
-    | grep -q 'cd "$vault" && claude'
+  fn_body cmd_lint | grep -q 'cd "$vault" && claude'
 }
 
 @test "cmd_curate + cmd_lint pass --add-dir \"\$vault\" to claude (defense in depth)" {
-  awk '/^cmd_curate\(\)/{flag=1} flag{print} /^}$/ && flag{flag=0; exit}' "$KUNSKAP_BIN" \
-    | grep -q '\-\-add-dir "$vault"'
-  awk '/^cmd_lint\(\)/{flag=1} flag{print} /^}$/ && flag{flag=0; exit}' "$KUNSKAP_BIN" \
-    | grep -q '\-\-add-dir "$vault"'
+  fn_body cmd_curate | grep -q '\-\-add-dir "$vault"'
+  fn_body cmd_lint | grep -q '\-\-add-dir "$vault"'
 }

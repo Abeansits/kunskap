@@ -17,7 +17,7 @@ setup() {
   TMPVAULT="$(mktemp -d -t kunskap-toml-fuzz.XXXXXX)"
   export TMPXDG TMPVAULT
   export XDG_CONFIG_HOME="$TMPXDG"
-  mkdir -p "$TMPVAULT/_meta" "$TMPVAULT/raw/inbox" "$TMPVAULT/wiki"
+  mkdir -p "$TMPVAULT/_meta"
 }
 
 teardown() {
@@ -71,6 +71,7 @@ EOF
 name = "fuzz"
 shared = false
 EOF
+  mkdir -p "$TMPVAULT/raw/inbox"   # validate_vault requires it
   write_identity_toml "$TMPXDG" alice desktop
   PATH="/usr/bin:/bin" run "$KUNSKAP_BIN" lint --vault "$TMPVAULT"
   [[ "$status" -ne 0 ]]
