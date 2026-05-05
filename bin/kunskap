@@ -186,9 +186,11 @@ cmd_curate() {
 
   local root prompt
   root="$(plugin_root)"
-  prompt="Use the curator agent (from the kunskap plugin) to compile inbox notes for the vault at: $vault
+  prompt="You have one task: invoke the \`curator\` subagent (defined in this plugin's agents/curator.md) via the Agent tool, passing this exact string as its ARGUMENTS:
 
-The agent's full system prompt encodes the §Curator contract. Pass the vault path to it as ARGUMENTS so it scopes all writes inside that vault. Do not write outside $vault. Do not modify this plugin repo."
+$vault
+
+The curator's system prompt already encodes the full §Curator contract — it knows what to do once it has the vault path. Do NOT attempt the curation work yourself; the curator subagent must own it. Do not write outside $vault. Do not modify this plugin repo. Report the curator's summary back when it returns."
 
   exec claude --plugin-dir "$root" --permission-mode acceptEdits -p "$prompt"
 }
@@ -210,16 +212,25 @@ cmd_link_stubs() {
   awk -v vault="$vault" -v outfmt="$format" '
     BEGIN {
       # One pass: walk wiki/, harvest filename + aliases from frontmatter and
-      # [[wikilinks]] from body in the same read.
+      # [[wikilinks]] from body in the same read. Frontmatter is the FIRST
+      # ---/--- pair only; body --- separators stay body.
       cmd = "find \"" vault "/wiki\" -type f -name \"*.md\" 2>/dev/null"
       while ((cmd | getline f) > 0) {
         n = split(f, parts, "/")
         bn = parts[n]; sub(/\.md$/, "", bn)
         files[bn] = f
-        infm = 0
+        in_fm = 0; fm_done = 0; ln = 0
         while ((getline line < f) > 0) {
-          if (line == "---") { infm = !infm; continue }
-          if (infm && line ~ /^aliases:/) {
+          ln++
+          if (!fm_done) {
+            if (ln == 1) {
+              if (line == "---") { in_fm = 1; continue }
+              fm_done = 1
+            } else if (in_fm && line == "---") {
+              in_fm = 0; fm_done = 1; continue
+            }
+          }
+          if (in_fm && line ~ /^aliases:/) {
             sub(/^aliases:[[:space:]]*\[?/, "", line)
             sub(/\]?[[:space:]]*$/, "", line)
             n2 = split(line, al, /,[[:space:]]*/)
@@ -229,7 +240,7 @@ cmd_link_stubs() {
             }
             continue
           }
-          if (!infm) {
+          if (fm_done) {
             rest = line
             while (match(rest, /\[\[[^]]+\]\]/)) {
               link = substr(rest, RSTART + 2, RLENGTH - 4)
@@ -249,21 +260,23 @@ cmd_link_stubs() {
         c = counts[link]
         kebab = link
         gsub(/[[:space:]]+/, "-", kebab); kebab = tolower(kebab)
-        if (link in files || kebab in files)        classify(link, c, "resolved")
-        else if (link in aliases || kebab in aliases) classify(link, c, "alias")
+        # Resolved: exact filename match OR an existing aliases: entry resolves it.
+        # Needs-alias: kebab match exists but the natural-language form is not declared.
+        if (link in files || link in aliases)        classify(link, c, "resolved")
+        else if (kebab in files)                     classify(link, c, "needs-alias")
         else if (c >= 2)                             classify(link, c, "needs-stub")
         else                                          classify(link, c, "orphan")
       }
 
       if (outfmt == "json") {
-        flush_json("resolved");  flush_json("alias")
+        flush_json("resolved");  flush_json("needs-alias")
         flush_json("needs-stub"); flush_json("orphan")
         printf "\n}\n"
       } else {
-        report("needs-stub", "Multi-ref stubs (>=2 refs, no file) — write a concept stub:")
-        report("orphan",     "Single-ref orphans (1 ref, no file) — leave as aspirational:")
-        report("alias",      "Name-mismatch (resolves via alias) — OK, listed for audit:")
-        report("resolved",   "Resolved links — OK:")
+        report("needs-stub",  "Multi-ref stubs (>=2 refs, no file) — write a concept stub:")
+        report("orphan",      "Single-ref orphans (1 ref, no file) — leave as aspirational:")
+        report("needs-alias", "Name-mismatch (kebab matches file, alias not declared) — curator should add aliases:")
+        report("resolved",    "Resolved links — OK:")
       }
     }
     function classify(link, c, kind,    rec) {

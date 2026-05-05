@@ -99,7 +99,7 @@ teardown_file() {
   run "$KUNSKAP_BIN" link-stubs --vault "$TMPVAULT" --format json
   [[ "$status" -eq 0 ]]
   echo "$output" | jq -e '.resolved' >/dev/null
-  echo "$output" | jq -e '.alias' >/dev/null
+  echo "$output" | jq -e '."needs-alias"' >/dev/null
   echo "$output" | jq -e '."needs-stub"' >/dev/null
   echo "$output" | jq -e '.orphan' >/dev/null
 }
@@ -111,6 +111,58 @@ teardown_file() {
   [[ "$status" -eq 0 ]]
   count=$(echo "$output" | jq '.resolved | length')
   [[ "$count" -ge 4 ]]
+}
+
+@test "link-stubs classifies natural-language link as needs-alias when kebab matches" {
+  # Build a throwaway vault: a single article whose body links to
+  # [[two-pass codex review]], with file `two-pass-codex-review.md` present
+  # but NOT carrying that alias in frontmatter. Per design §200, this should
+  # be classified as needs-alias (curator action item), not resolved.
+  alias_vault="$(mktemp -d)"
+  mkdir -p "$alias_vault/_meta" "$alias_vault/raw/inbox" "$alias_vault/wiki/learnings"
+  echo "[vault]" > "$alias_vault/_meta/kunskap.toml"
+  cat > "$alias_vault/wiki/learnings/two-pass-codex-review.md" <<'EOF'
+---
+type: learning
+---
+Body.
+EOF
+  cat > "$alias_vault/wiki/learnings/uses-it.md" <<'EOF'
+---
+type: learning
+---
+This refs [[two-pass codex review]] in prose.
+EOF
+  run "$KUNSKAP_BIN" link-stubs --vault "$alias_vault" --format json
+  rm -rf "$alias_vault"
+  [[ "$status" -eq 0 ]]
+  needs=$(echo "$output" | jq -r '."needs-alias"[0].link')
+  [[ "$needs" == "two-pass codex review" ]]
+}
+
+@test "link-stubs ignores body --- separators when extracting wikilinks" {
+  # Pass-1 finding: a body line of exactly "---" used to flip frontmatter
+  # state back on, suppressing wikilink extraction afterward.
+  sep_vault="$(mktemp -d)"
+  mkdir -p "$sep_vault/_meta" "$sep_vault/raw/inbox" "$sep_vault/wiki/learnings"
+  echo "[vault]" > "$sep_vault/_meta/kunskap.toml"
+  cat > "$sep_vault/wiki/learnings/with-separator.md" <<'EOF'
+---
+type: learning
+---
+
+# Above the rule
+
+[[link-before]]
+
+---
+
+[[link-after-the-rule]]
+EOF
+  run "$KUNSKAP_BIN" link-stubs --vault "$sep_vault" --format json
+  rm -rf "$sep_vault"
+  [[ "$status" -eq 0 ]]
+  echo "$output" | jq -e '.orphan | map(.link) | index("link-after-the-rule")' >/dev/null
 }
 
 # ---------- audit-coverage ----------

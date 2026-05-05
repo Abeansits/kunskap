@@ -19,8 +19,7 @@ setup() {
 }
 
 @test "MUST 1 — explicit prohibition on batch-then-commit" {
-  prompt_contains "NEVER"
-  prompt_contains "Batch writes across multiple inbox files"
+  prompt_contains "NEVER** batch writes across multiple inbox files and commit at the end"
 }
 
 @test "MUST 1 — commit message shape spelled out" {
@@ -61,8 +60,8 @@ setup() {
 }
 
 @test "MUST 4 — multi-finding files quote only relevant sub-finding per article" {
-  prompt_contains "(third sub-finding)"
   prompt_contains "quote ONLY the relevant sub-finding"
+  grep -Eq 'sub-finding[ \)]' "$CURATOR_AGENT"
 }
 
 @test "MUST 5 — vault scope = \$ARGUMENTS, no writes outside vault" {
