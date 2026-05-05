@@ -50,7 +50,8 @@ jobs:
       - name: agents/curator.md encodes the run-record final step (P5)
         run: |
           grep -q 'kunskap: curator run record' agents/curator.md
-          grep -q 'preserving any existing `linter` block' agents/curator.md
+          grep -q '_meta/last-run/curator.json' agents/curator.md
+          grep -q 'sharded per-role' agents/curator.md
 
       - name: agents/linter.md encodes MUST 9 + sharded last-run whitelist (P5)
         run: |
