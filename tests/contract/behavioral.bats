@@ -11,11 +11,16 @@
 
 load helpers
 
-setup() {
+setup_file() {
   if [[ "${KUNSKAP_LIVE_TESTS:-}" != "1" ]]; then
-    skip "set KUNSKAP_LIVE_TESTS=1 to run behavioral contract tests"
+    export BATS_BEHAVIORAL_SKIP="set KUNSKAP_LIVE_TESTS=1 to run behavioral contract tests"
+  elif ! command -v claude >/dev/null; then
+    export BATS_BEHAVIORAL_SKIP="claude CLI not on PATH"
   fi
-  command -v claude >/dev/null || skip "claude CLI not on PATH"
+}
+
+setup() {
+  [[ -z "${BATS_BEHAVIORAL_SKIP:-}" ]] || skip "$BATS_BEHAVIORAL_SKIP"
   TMPVAULT="$(make_temp_vault)"
   export TMPVAULT
 }

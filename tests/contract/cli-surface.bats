@@ -5,12 +5,13 @@
 
 load helpers
 
-setup() {
+# CLI tests are read-only against TMPVAULT — build it once per file and share.
+setup_file() {
   TMPVAULT="$(make_temp_vault)"
   export TMPVAULT
 }
 
-teardown() {
+teardown_file() {
   if [[ -n "${TMPVAULT:-}" && -d "$TMPVAULT" ]]; then rm -rf "$TMPVAULT"; fi
 }
 
@@ -28,7 +29,7 @@ teardown() {
   [[ "$output" == *"absolute path"* ]]
 }
 
-@test "curate --vault rejects flag-as-value (Pass-2 hardening)" {
+@test "curate --vault rejects flag-as-value" {
   run "$KUNSKAP_BIN" curate --vault --check
   [[ "$status" -ne 0 ]]
   [[ "$output" == *"got next flag"* ]]

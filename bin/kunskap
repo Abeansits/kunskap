@@ -7,8 +7,6 @@ IDENTITY_FILE="$CONFIG_DIR/identity.toml"
 
 die() { echo "kunskap: $*" >&2; exit 1; }
 
-# Resolve the plugin root from CLAUDE_PLUGIN_ROOT (set by Claude Code when
-# bin/ is on the plugin PATH) or by walking up from this script's location.
 plugin_root() {
   if [[ -n "${CLAUDE_PLUGIN_ROOT:-}" ]]; then
     printf '%s\n' "$CLAUDE_PLUGIN_ROOT"
@@ -21,6 +19,7 @@ plugin_root() {
 
 validate_vault() {
   local vault="$1"
+  [[ "$vault" = /* ]] || die "--vault must be an absolute path (got: $vault)"
   [[ -d "$vault" ]] || die "vault path not found: $vault"
   [[ -f "$vault/_meta/kunskap.toml" ]] || die "not a kunskap vault (missing _meta/kunskap.toml): $vault"
   [[ -d "$vault/raw/inbox" ]] || die "not a kunskap vault (missing raw/inbox/): $vault"
@@ -179,9 +178,7 @@ cmd_curate() {
     esac
   done
   [[ -n "$vault" ]] || die "curate: --vault <abs-path> is required"
-  [[ "$vault" = /* ]] || die "curate: --vault must be an absolute path (got: $vault)"
   [[ ${#extra[@]} -eq 0 ]] || die "curate: unknown extra args: ${extra[*]}"
-
   validate_vault "$vault"
   $check && { echo "kunskap: vault $vault looks healthy"; return 0; }
 
@@ -206,24 +203,22 @@ cmd_link_stubs() {
     esac
   done
   [[ -n "$vault" ]] || die "link-stubs: --vault <abs-path> is required"
-  [[ "$vault" = /* ]] || die "link-stubs: --vault must be an absolute path (got: $vault)"
   [[ "$format" == "text" || "$format" == "json" ]] || die "link-stubs: --format must be text or json (got: $format)"
   [[ ${#extra[@]} -eq 0 ]] || die "link-stubs: unknown extra args: ${extra[*]}"
   validate_vault "$vault"
 
   awk -v vault="$vault" -v outfmt="$format" '
     BEGIN {
+      # One pass: walk wiki/, harvest filename + aliases from frontmatter and
+      # [[wikilinks]] from body in the same read.
       cmd = "find \"" vault "/wiki\" -type f -name \"*.md\" 2>/dev/null"
       while ((cmd | getline f) > 0) {
-        # base name without .md, plus path-relative slug
         n = split(f, parts, "/")
-        bn = parts[n]
-        sub(/\.md$/, "", bn)
+        bn = parts[n]; sub(/\.md$/, "", bn)
         files[bn] = f
-        # also harvest aliases from the file
+        infm = 0
         while ((getline line < f) > 0) {
-          if (line == "---" && !infm) { infm = 1; continue }
-          if (line == "---" && infm)  { infm = 0; close(f); break }
+          if (line == "---") { infm = !infm; continue }
           if (infm && line ~ /^aliases:/) {
             sub(/^aliases:[[:space:]]*\[?/, "", line)
             sub(/\]?[[:space:]]*$/, "", line)
@@ -232,39 +227,32 @@ cmd_link_stubs() {
               gsub(/^"|"$|^'\''|'\''$/, "", al[i])
               if (al[i] != "") aliases[al[i]] = bn
             }
+            continue
+          }
+          if (!infm) {
+            rest = line
+            while (match(rest, /\[\[[^]]+\]\]/)) {
+              link = substr(rest, RSTART + 2, RLENGTH - 4)
+              sub(/\|.*$/, "", link)
+              if (link != "") counts[link]++
+              rest = substr(rest, RSTART + RLENGTH)
+            }
           }
         }
-        infm = 0
+        close(f)
       }
       close(cmd)
 
-      gcmd = "grep -roh \"\\[\\[[^]]*\\]\\]\" \"" vault "/wiki\" 2>/dev/null"
-      while ((gcmd | getline link) > 0) {
-        gsub(/\[\[|\]\]/, "", link)
-        # strip pipe-display ([[link|alt]])
-        sub(/\|.*$/, "", link)
-        if (link == "") continue
-        counts[link]++
-      }
-      close(gcmd)
-
-      first_resolved = 1; first_alias = 1; first_stub = 1; first_orphan = 1
       if (outfmt == "json") printf "{\n"
 
       for (link in counts) {
         c = counts[link]
         kebab = link
-        gsub(/[[:space:]]+/, "-", kebab)
-        kebab = tolower(kebab)
-        if (link in files || kebab in files) {
-          classify(link, c, "resolved", first_resolved); first_resolved = 0
-        } else if (link in aliases) {
-          classify(link, c, "alias", first_alias); first_alias = 0
-        } else if (c >= 2) {
-          classify(link, c, "needs-stub", first_stub); first_stub = 0
-        } else {
-          classify(link, c, "orphan", first_orphan); first_orphan = 0
-        }
+        gsub(/[[:space:]]+/, "-", kebab); kebab = tolower(kebab)
+        if (link in files || kebab in files)        classify(link, c, "resolved")
+        else if (link in aliases || kebab in aliases) classify(link, c, "alias")
+        else if (c >= 2)                             classify(link, c, "needs-stub")
+        else                                          classify(link, c, "orphan")
       }
 
       if (outfmt == "json") {
@@ -278,7 +266,7 @@ cmd_link_stubs() {
         report("resolved",   "Resolved links — OK:")
       }
     }
-    function classify(link, c, kind, _is_first,    rec) {
+    function classify(link, c, kind,    rec) {
       rec = link "\t" c
       buckets[kind] = buckets[kind] (buckets[kind] ? "\n" : "") rec
     }
@@ -319,7 +307,6 @@ cmd_audit_coverage() {
     esac
   done
   [[ -n "$vault" ]] || die "audit-coverage: --vault <abs-path> is required"
-  [[ "$vault" = /* ]] || die "audit-coverage: --vault must be an absolute path (got: $vault)"
   [[ "$format" == "text" || "$format" == "json" ]] || die "audit-coverage: --format must be text or json (got: $format)"
   [[ ${#extra[@]} -eq 0 ]] || die "audit-coverage: unknown extra args: ${extra[*]}"
   validate_vault "$vault"
@@ -359,7 +346,6 @@ cmd_audit_coverage() {
         printf "\nCovered: %d source files cited by at least one article.\n", n_cov
       }
 
-      # Exit non-zero if any drop or broken provenance.
       if (n_drop > 0 || n_broken > 0) exit 2
     }
     function collect_sources(dir, prefix,    cmd, line, base, rel) {
