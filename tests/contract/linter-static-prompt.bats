@@ -73,7 +73,10 @@ setup() {
 }
 
 @test "MUST 7 — path/severity/suggested-action triple is required" {
-  linter_prompt_contains "path/severity/suggested-action triple"
+  # `path/severity/suggested-action triple is useless` is unique to MUST 7;
+  # the bare `path/severity/suggested-action triple` substring also appears
+  # in the MUST-NOT clause and would mask drift in just MUST 7.
+  linter_prompt_contains "path/severity/suggested-action triple is useless"
   linter_prompt_contains "Never emit one"
 }
 
@@ -140,6 +143,11 @@ setup() {
 @test "MUST 5 — CURATOR-IDLE finding type + 48h threshold" {
   linter_prompt_contains "[CURATOR-IDLE]"
   linter_prompt_contains "ran_at"
+  # `or the file is missing entirely` is unique to MUST 5 — the case where
+  # last-run.json is absent should still emit the finding. Without this
+  # anchor, MUST 5 could be deleted and the test would still pass on
+  # substring matches from MUST 4 + the output-shape ([CURATOR-IDLE]).
+  linter_prompt_contains "or the file is missing entirely"
 }
 
 @test "MUST 6 — IDENTITY-MISMATCH finding type + roles.toml + git log" {

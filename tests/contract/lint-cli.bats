@@ -169,6 +169,35 @@ teardown() {
   [[ "$before_line" -lt "$spawn_line" ]]
 }
 
+@test "bin/kunskap also snapshots HEAD oid (write+commit case)" {
+  # Pass-1 finding: pre/post `git status --porcelain` alone misses a
+  # write-and-commit cycle that ends with a clean working tree. Capturing
+  # the HEAD oid before+after closes that gap.
+  grep -q 'head_before' "$KUNSKAP_BIN"
+  grep -q 'head_after'  "$KUNSKAP_BIN"
+  grep -q 'rev-parse HEAD' "$KUNSKAP_BIN"
+}
+
+@test "bin/kunskap uses rev-parse --is-inside-work-tree, not -d \$vault/.git" {
+  # Pass-1 finding: `[[ -d $vault/.git ]]` skips git worktrees (where .git
+  # is a file pointing at the worktree's gitdir). Use the canonical check.
+  grep -q 'rev-parse --is-inside-work-tree' "$KUNSKAP_BIN"
+}
+
+@test "bin/kunskap correctly captures agent exit code without ! inversion" {
+  # Pass-1 block-ship: `if ! cmd; then x=$?; fi` returns 0 (status of !),
+  # losing the real failure code. The correct form is `if cmd; then 0;
+  # else x=$?; fi`. Source-grep for the corrected pattern in cmd_lint.
+  awk '/^cmd_lint\(\)/{flag=1} flag{print} /^}$/ && flag{flag=0; exit}' "$KUNSKAP_BIN" \
+    | grep -q 'if agent_out='
+  awk '/^cmd_lint\(\)/{flag=1} flag{print} /^}$/ && flag{flag=0; exit}' "$KUNSKAP_BIN" \
+    | grep -q 'else'
+  awk '/^cmd_lint\(\)/{flag=1} flag{print} /^}$/ && flag{flag=0; exit}' "$KUNSKAP_BIN" \
+    | grep -q 'agent_status=\$?'
+  ! awk '/^cmd_lint\(\)/{flag=1} flag{print} /^}$/ && flag{flag=0; exit}' "$KUNSKAP_BIN" \
+    | grep -q 'if ! agent_out='
+}
+
 @test "bin/kunskap exit-code semantics are encoded (json→0, text-with-findings→1, invariant-violation→2)" {
   # All three return-paths must be present in cmd_lint. We check by grepping
   # for the distinguishing comments + return statements.
