@@ -91,20 +91,20 @@ teardown() {
   write_identity_toml "$TMPXDG"
   rm -f "$TMPVAULT/_meta/roles.toml"
   # Force a controlled non-zero AFTER the role-check warning by stripping
-  # claude from PATH; the warning lands on stderr regardless.
+  # claude from PATH; the warning lands on stderr regardless. The role
+  # name is interpolated (`roles.curator.primary`), not the placeholder.
   run env PATH="/usr/bin:/bin" "$KUNSKAP_BIN" curate --vault "$TMPVAULT"
   [[ "$status" -ne 0 ]]
-  [[ "$output" == *"no roles.<role>.primary configured"* ]]
+  [[ "$output" == *"no roles.curator.primary configured"* ]]
 }
 
 @test "lint proceeds when roles.toml has primary=\"TBD\" (warn, not refuse)" {
   write_identity_toml "$TMPXDG"
-  # No claude on PATH so we don't actually spawn; warning still emits.
+  # No claude on PATH so we don't actually spawn; warning lands on stderr
+  # before claude-PATH refusal. Role name is interpolated.
   run env PATH="/usr/bin:/bin" "$KUNSKAP_BIN" lint --vault "$TMPVAULT"
   [[ "$status" -ne 0 ]]
-  # TBD is treated as missing — quiet for TBD specifically, warning otherwise.
-  # (TBD → primary becomes empty → warn fires.)
-  [[ "$output" == *"no roles.<role>.primary configured"* || "$output" == *"claude"* ]]
+  [[ "$output" == *"no roles.linter.primary configured"* ]]
 }
 
 # ---------- mismatch refuses unless --force ----------

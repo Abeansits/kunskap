@@ -176,7 +176,7 @@ check_role() {
   fi
   primary="$(read_role_primary "$vault" "$role" || true)"
   if [[ -z "$primary" ]]; then
-    echo "kunskap: $role: no roles.<role>.primary configured ($vault/_meta/roles.toml missing or TBD); running as $identity (warning, not refusal)" >&2
+    echo "kunskap: $role: no roles.$role.primary configured ($vault/_meta/roles.toml missing or TBD); running as $identity (warning, not refusal)" >&2
     return 0
   fi
   if [[ "$primary" == "$identity" ]]; then
