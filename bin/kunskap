@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="0.3.0"
+VERSION="0.4.0"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/kunskap"
 IDENTITY_FILE="$CONFIG_DIR/identity.toml"
 
@@ -50,6 +50,7 @@ Usage:
   kunskap learn disable
   kunskap learn status
   kunskap curate --vault <abs-path> [--check]
+  kunskap lint   [--vault <abs-path>] [--format text|json]
   kunskap drafts list   [--vault <abs-path>] [--format text|json]
   kunskap drafts show   <id-or-slug> [--vault <abs-path>]
   kunskap drafts approve <id-or-slug> [--into <article-slug>] [--vault <abs-path>]
@@ -81,6 +82,13 @@ Notes:
 
   \`curate\` spawns the curator agent headlessly via \`claude --plugin-dir\`.
   Requires Claude Code on PATH and Anthropic auth configured.
+
+  \`lint\` spawns the linter agent the same way. Read-only: the agent never
+  writes to the vault, and the CLI verifies \`git status --porcelain\` is
+  clean post-run (fails non-zero if the read-only invariant was violated).
+  Exit codes: 0 = no findings, 1 = findings present (default mode);
+  \`--format json\` always exits 0 and emits a structured findings array.
+  Vault resolves from --vault, then the project marker (.claude/kunskap.json).
 
   \`drafts\` operates on <vault>/wiki/_drafts/. The vault is resolved from
   --vault, then from the project marker (.claude/kunskap.json), then errors.
@@ -459,6 +467,120 @@ $vault
 The curator's system prompt already encodes the full §Curator contract — it knows what to do once it has the vault path. Do NOT attempt the curation work yourself; the curator subagent must own it. Do not write outside $vault. Do not modify this plugin repo. Report the curator's summary back when it returns."
 
   exec claude --plugin-dir "$root" --permission-mode acceptEdits -p "$prompt"
+}
+
+cmd_lint() {
+  local vault_flag="" format="text" extra=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --vault)  require_value --vault  "${2-__MISSING__}"; vault_flag="$2"; shift 2 ;;
+      --format) require_value --format "${2-__MISSING__}"; format="$2";     shift 2 ;;
+      *) extra+=("$1"); shift ;;
+    esac
+  done
+  [[ "$format" == "text" || "$format" == "json" ]] || die "lint: --format must be text or json (got: $format)"
+  [[ ${#extra[@]} -eq 0 ]] || die "lint: unknown extra args: ${extra[*]}"
+
+  # Vault resolution: flag wins, else project marker (P2 enable pattern).
+  local vault
+  if [[ -n "$vault_flag" ]]; then
+    vault="$vault_flag"
+  else
+    local marker
+    marker="$(marker_path)"
+    [[ -f "$marker" ]] \
+      || die "lint: no --vault and no project marker at $marker; pass --vault <abs> or run \`kunskap learn enable\` first"
+    vault="$(jq -r '.vault // ""' "$marker" 2>/dev/null || true)"
+    [[ -n "$vault" ]] || die "lint: marker $marker has no \`vault\` field"
+  fi
+  validate_vault "$vault"
+
+  # Self-state checks before external (P1 §5). Plugin shape, then vault
+  # state, then claude-on-PATH. The rebase guard belongs in self-state
+  # because it's a precondition of the invariant check, not a runtime dep.
+  local root prompt
+  root="$(plugin_root)"
+  [[ -f "$root/agents/linter.md" ]] \
+    || die "lint: linter agent not found at $root/agents/linter.md (plugin_root resolved to $root; set CLAUDE_PLUGIN_ROOT to override)"
+
+  # Mid-rebase / merge / cherry-pick guard (P2 §3 lesson): if the vault
+  # is in the middle of a git rewrite, the read-only invariant check
+  # would false-positive (porcelain shifts as rebase steps land). Refuse
+  # with an actionable message rather than emit confusing diff output.
+  if [[ -d "$vault/.git/rebase-merge" || -d "$vault/.git/rebase-apply" \
+     || -f "$vault/.git/MERGE_HEAD" || -f "$vault/.git/CHERRY_PICK_HEAD" ]]; then
+    die "lint: vault $vault is mid-rebase/merge/cherry-pick; resolve with \`git -C $vault rebase --continue|--abort\` (or \`git merge --abort\`) before linting"
+  fi
+
+  command -v claude >/dev/null || die "lint: \`claude\` not on PATH; install Claude Code first"
+
+  # Read-only invariant snapshot — capture BEFORE so a pre-existing dirty
+  # vault isn't blamed on the linter (P3 §3 lesson on scaffold-overlay
+  # contracts: never gate on a clean state we didn't establish). We snapshot
+  # both the working-tree porcelain AND the HEAD oid: porcelain catches
+  # untracked/staged/working-tree writes; HEAD catches a write+commit cycle
+  # that would leave porcelain clean again (Pass-1 finding).
+  local has_git=false status_before head_before
+  if git -C "$vault" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    has_git=true
+    status_before="$(git -C "$vault" status --porcelain --untracked-files=all 2>/dev/null || true)"
+    head_before="$(git -C "$vault" rev-parse HEAD 2>/dev/null || true)"
+  fi
+
+  prompt="You have one task: invoke the \`linter\` subagent (defined in this plugin's agents/linter.md) via the Agent tool, passing this exact string as its ARGUMENTS:
+
+$vault
+
+The linter's system prompt encodes the full read-only audit contract — it knows what to do once it has the vault path. Output format: $format. If the format is \"json\", instruct the linter to emit a single JSON object with a \`findings: [...]\` array of {type, severity, path, message, suggested_action} records (and NO human-readable text). If \"text\", findings are one per line in the shape \`[TYPE] path | message\`, grouped by severity.
+
+Do NOT attempt the audit yourself; the linter subagent must own it. Do NOT write to the vault — the linter is read-only. Do not modify this plugin repo. Report the linter's output verbatim."
+
+  # Capture exit code WITHOUT `if !` — the negated form sets $? to 0 (the
+  # status of `!` itself), losing the real claude failure code. Pass-1
+  # block-ship bug, confirmed via `bash -c 'if ! (exit 7); then echo $?; fi'`
+  # → 0. The `if cmd; else x=$?` form propagates correctly.
+  local agent_out agent_status
+  if agent_out="$(claude --plugin-dir "$root" --permission-mode acceptEdits -p "$prompt")"; then
+    agent_status=0
+  else
+    agent_status=$?
+  fi
+
+  printf '%s\n' "$agent_out"
+
+  # Exit-code priority: invariant violation (2) > agent failure (passthrough)
+  # > text-mode findings (1) > clean (0). Invariant fires first because a
+  # write is the load-bearing contract failure regardless of agent exit.
+  if $has_git; then
+    local status_after head_after
+    status_after="$(git -C "$vault" status --porcelain --untracked-files=all 2>/dev/null || true)"
+    head_after="$(git -C "$vault" rev-parse HEAD 2>/dev/null || true)"
+    if [[ "$status_before" != "$status_after" || "$head_before" != "$head_after" ]]; then
+      {
+        echo "kunskap: lint MUST 8 violation — vault state changed during linter run (read-only contract broken)."
+        echo "  If the curator (or anything else) was running concurrently, that's the diagnostic — re-run \`kunskap lint\` when no other writers are active."
+        if [[ "$head_before" != "$head_after" ]]; then
+          echo "  HEAD: $head_before → $head_after (commit happened during the run)"
+        fi
+        if [[ "$status_before" != "$status_after" ]]; then
+          echo "  Working-tree diff:"
+          diff <(printf '%s\n' "$status_before") <(printf '%s\n' "$status_after") || true
+        fi
+      } >&2
+      return 2
+    fi
+  fi
+
+  [[ "$agent_status" -eq 0 ]] || return "$agent_status"
+
+  # Exit 0 for JSON (the JSON IS the output; downstream parses it).
+  # Exit 1 for text mode if any line starts with `[<TYPE>]` (a finding line).
+  [[ "$format" == "json" ]] && return 0
+
+  if printf '%s\n' "$agent_out" | grep -Eq '^\[[A-Z-]+\][[:space:]]'; then
+    return 1
+  fi
+  return 0
 }
 
 cmd_link_stubs() {
@@ -1279,6 +1401,7 @@ main() {
     whoami)                   cmd_whoami "$@" ;;
     learn)                    cmd_learn "$@" ;;
     curate)                   cmd_curate "$@" ;;
+    lint)                     cmd_lint "$@" ;;
     drafts)                   cmd_drafts "$@" ;;
     link-stubs)               cmd_link_stubs "$@" ;;
     audit-coverage)           cmd_audit_coverage "$@" ;;
