@@ -152,6 +152,26 @@ teardown() {
   grep -q "promoted from drafts/topic-alpha" "$TMPVAULT/wiki/learnings/example-topic.md"
 }
 
+@test "drafts approve --into preserves body when draft has no frontmatter at all" {
+  # Pass-2 block-ship: prior counting awk required two `---` delimiters; a
+  # frontmatter-less draft appended only the heading, dropping body content.
+  TMPVAULT="$(make_vault_with_drafts)"
+  cat > "$TMPVAULT/wiki/_drafts/no-fm--2026-05-02.md" <<'EOF'
+# Bare draft
+
+Body content with no frontmatter at all. Must survive --into merge.
+
+## Recommendation
+
+Approve into example-topic.
+EOF
+  ( cd "$TMPVAULT" && git add . && git -c user.email=test@local -c user.name=test commit -q -m "seed bare" ) >/dev/null
+  run "$KUNSKAP_BIN" drafts approve no-fm --vault "$TMPVAULT" --into example-topic
+  [[ "$status" -eq 0 ]]
+  grep -q "Body content with no frontmatter" "$TMPVAULT/wiki/learnings/example-topic.md"
+  grep -q "## Recommendation" "$TMPVAULT/wiki/learnings/example-topic.md"
+}
+
 @test "drafts approve --into preserves body content past horizontal-rule ---" {
   # Pass-1 block-ship: prior `sed -n '/^---$/,/^---$/!p'` negated EVERY
   # `---...---` range, silently truncating draft bodies that contained

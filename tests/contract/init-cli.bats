@@ -236,6 +236,28 @@ teardown() {
   [[ "$output" == *"double-quote"* ]]
 }
 
+@test "init --force --yes refuses to overwrite a non-Kunskap target's tracked files" {
+  # Pass-2 block-ship: --force --yes used to blindly cp -R the template and
+  # silently overwrote tracked README.md / .gitignore in non-Kunskap repos.
+  mkdir -p "$TMPTARGET"
+  echo "user's existing project README" > "$TMPTARGET/README.md"
+  echo "user's existing .gitignore" > "$TMPTARGET/.gitignore"
+  run "$KUNSKAP_BIN" init "$TMPTARGET" --force --yes
+  [[ "$status" -ne 0 ]]
+  [[ "$output" == *"not a Kunskap vault"* ]]
+  [[ "$output" == *"README.md"* ]]
+  # User content untouched.
+  grep -q "user's existing project README" "$TMPTARGET/README.md"
+}
+
+@test "init --force --yes IS still idempotent on an already-Kunskap vault (re-init)" {
+  # The Pass-2 guard distinguishes case-3 (non-Kunskap repo) from case-2
+  # (re-init on existing vault). Re-init must keep working.
+  "$KUNSKAP_BIN" init "$TMPTARGET" --name "Already a Vault"
+  run "$KUNSKAP_BIN" init "$TMPTARGET" --name "Already a Vault" --force --yes
+  [[ "$status" -eq 0 ]]
+}
+
 @test "init accepts a relative path and canonicalizes to absolute" {
   cd "$(dirname "$TMPTARGET")"
   rel="$(basename "$TMPTARGET")"
