@@ -145,7 +145,7 @@ jobs:
           if XDG_CONFIG_HOME="$xdg" PATH="/usr/bin:/bin" ./bin/kunskap lint --vault "$tmp" 2>&1 | tee /tmp/lint-id.out; then
             echo "expected non-zero exit when claude is not on PATH"; exit 1
           fi
-          grep -q 'no roles.<role>.primary configured' /tmp/lint-id.out  # TBD-primary warning
+          grep -q 'no roles.linter.primary configured' /tmp/lint-id.out  # TBD-primary warning
           grep -q 'claude' /tmp/lint-id.out
           # Vault must remain unmodified by failed preflight (read-only).
           ( cd "$tmp" && git add . && git -c user.email=ci@k -c user.name=ci commit -q -m seed )
