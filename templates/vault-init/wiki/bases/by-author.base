@@ -1,0 +1,14 @@
+filters:
+  and:
+    - 'author != ""'
+    - file.inFolder("wiki")
+views:
+  - type: table
+    name: "By author"
+    groupBy:
+      property: note.author
+      direction: ASC
+    order:
+      - file.name
+      - note.last_curated
+      - note.source_count
