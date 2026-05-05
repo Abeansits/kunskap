@@ -11,6 +11,11 @@ setup() {
   TMPXDG="$(make_temp_xdg)"
   export TMPPROJ TMPXDG
   export XDG_CONFIG_HOME="$TMPXDG"
+  # P5 role check requires a set identity. The fixture vault used by
+  # make_temp_vault carries primary="fixture@bats" — match it so role-check
+  # passes without a behavioral assertion. Tests that exercise the
+  # mismatch / no-identity refusal paths overwrite this explicitly.
+  write_identity_toml "$TMPXDG" fixture bats
 }
 
 teardown() {
@@ -164,8 +169,10 @@ teardown() {
   grep -q 'status_before' "$KUNSKAP_BIN"
   grep -q 'status_after' "$KUNSKAP_BIN"
   # The before-snapshot line must precede the claude invocation textually.
+  # P5 (CWD-fix): spawn line is now `cd "$vault" && claude --add-dir … --plugin-dir …`
+  # so we anchor on `--plugin-dir "$root"` which spans both pre- and post-CWD-fix.
   before_line=$(grep -n 'status_before=' "$KUNSKAP_BIN" | head -1 | cut -d: -f1)
-  spawn_line=$(grep -n 'claude --plugin-dir' "$KUNSKAP_BIN" | tail -1 | cut -d: -f1)
+  spawn_line=$(grep -n '\-\-plugin-dir "$root"' "$KUNSKAP_BIN" | tail -1 | cut -d: -f1)
   [[ "$before_line" -lt "$spawn_line" ]]
 }
 

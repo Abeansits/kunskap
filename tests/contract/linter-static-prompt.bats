@@ -99,6 +99,21 @@ setup() {
   linter_prompt_contains "best-effort defense in depth"
 }
 
+@test "MUST 8 — _meta/last-run.json is the SOLE whitelisted write (P5)" {
+  linter_prompt_contains "SOLE permitted write"
+  linter_prompt_contains "_meta/last-run.json"
+}
+
+@test "MUST 9 — record the run under the linter key, preserving curator block (P5)" {
+  linter_prompt_contains "MUST 9 — record the run"
+  linter_prompt_contains "Preserve any existing"
+  linter_prompt_contains "jq --argjson v \"\$record\" '. + {linter: \$v}'"
+}
+
+@test "MUST 9 — run-record commit message is \`kunskap: linter run record\` (P5)" {
+  linter_prompt_contains "kunskap: linter run record"
+}
+
 # ---------- MUST clauses (each finding type has its own fingerprint) ----------
 
 @test "MUST 1 — DRIFT finding type is mandated" {

@@ -156,7 +156,9 @@ setup() {
 # with literal-string test.
 
 @test "Drafts naming convention spelled out (topic-slug + iso-date)" {
-  prompt_contains "_drafts/<topic-slug>--<iso-date>.md"
+  # Use a sibling-context anchor so this fingerprint isn't a substring of
+  # the MUST-3 routing fingerprint (P4 §7 substring-collision discipline).
+  prompt_contains "Filename: \`<topic-slug>--<iso-date>.md\`"
 }
 
 @test "Drafts naming convention also spelled out in MUST 3 routing" {
@@ -165,4 +167,30 @@ setup() {
 
 @test "Drafts edge-case guidance explicitly rejects proposal-title naming" {
   prompt_contains "Drafts named after their proposal title go stale"
+}
+
+# ---------- P5: run-record + role-aware metadata ----------
+
+@test "P5 — final run-record step writes _meta/last-run.json#curator + commit" {
+  prompt_contains "Record the run"
+  prompt_contains "_meta/last-run.json"
+  prompt_contains "kunskap: curator run record"
+}
+
+@test "P5 — run-record preserves the linter section via jq merge" {
+  prompt_contains "preserving any existing \`linter\` block"
+  prompt_contains "jq --argjson v"
+}
+
+@test "P5 — run-record fields cover counts + head oids + forced flag" {
+  prompt_contains "inbox_processed"
+  prompt_contains "articles_written"
+  prompt_contains "drafts_routed"
+  prompt_contains "head_before"
+  prompt_contains "head_after"
+  prompt_contains "forced"
+}
+
+@test "P5 — atomicity: partial run leaves no run record (resume cleanly)" {
+  prompt_contains "if the run crashes mid-loop, this commit never lands"
 }

@@ -22,15 +22,20 @@ setup_file() {
 setup() {
   [[ -z "${BATS_BEHAVIORAL_SKIP:-}" ]] || skip "$BATS_BEHAVIORAL_SKIP"
   TMPVAULT="$(make_temp_vault)"
-  export TMPVAULT
+  TMPXDG="$(make_temp_xdg)"
+  export TMPVAULT TMPXDG
+  export XDG_CONFIG_HOME="$TMPXDG"
+  # P5: identity required for role check + last-run record. The fixture vault
+  # carries no roles.toml, so the role check warns and proceeds.
+  write_identity_toml "$TMPXDG"
 }
 
 teardown() {
-  if [[ -n "${TMPVAULT:-}" && -d "$TMPVAULT" ]]; then rm -rf "$TMPVAULT"; fi
+  cleanup_temp_dirs TMPVAULT TMPXDG
 }
 
 run_curator() {
-  "$KUNSKAP_BIN" curate --vault "$TMPVAULT"
+  "$KUNSKAP_BIN" curate --vault "$TMPVAULT" "$@"
 }
 
 @test "MUST 1 — git log shows >= N atomic per-article commits, not one bulk commit" {

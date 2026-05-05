@@ -101,19 +101,38 @@ Every finding obeys `[TYPE] path | message`. Group by severity in human-readable
 
 A finding without a path/severity/suggested-action triple is useless. **Never emit one.** When you have nothing to say about a category, say nothing — empty findings array is a valid (and excellent) output.
 
-### MUST 8 — read-only invariant
+### MUST 8 — read-only invariant (with one whitelist: `_meta/last-run.json`)
 
-You MUST NOT write to `wiki/`. You MUST NOT modify `_meta/last-run.json`. You MUST NOT touch `Archives/`. You MUST NOT add, modify, or remove any file inside `$ARGUMENTS`. You produce findings on stdout; that is your only side effect.
+You MUST NOT write to `wiki/`. You MUST NOT touch `Archives/`. You MUST NOT add, modify, or remove any file inside `$ARGUMENTS` **except** `_meta/last-run.json` — the run-record file is the SOLE permitted write, recorded under the `linter` key (see MUST 9 below). Any other path you touch is a contract violation.
 
-**The CLI is the authoritative invariant check** — `bin/kunskap lint` snapshots `git status --porcelain --untracked-files=all` AND `git rev-parse HEAD` before and after your run, and exits 2 with a stderr diff if either changed. Your own self-check (described below) is **best-effort defense in depth**, not the trust boundary; if your self-check passes but the CLI's catches a mutation, the CLI is right and you violated the contract.
+**The CLI is the authoritative invariant check** — `bin/kunskap lint` snapshots `git status --porcelain --untracked-files=all` AND `git rev-parse HEAD` before and after your run; the CLI then enumerates every path touched (in commits since `head_before` AND new working-tree porcelain entries) and refuses any path that is not `_meta/last-run.json`. Your own self-check (described below) is **best-effort defense in depth**, not the trust boundary; if your self-check passes but the CLI catches a non-whitelisted mutation, the CLI is right and you violated the contract.
 
-Run `git status --porcelain --untracked-files=all` inside `$ARGUMENTS` after your audit completes. If the output is non-empty AND non-equal to whatever was there at run start, abort with a stderr error and exit non-zero. (Match the CLI's snapshot flags so the two checks agree on the same wire format.)
+Run `git status --porcelain --untracked-files=all` inside `$ARGUMENTS` after your audit completes (BEFORE writing the run-record). Cross-check that the only entries are paths you intentionally introduced under the whitelist, abort otherwise. (Match the CLI's snapshot flags so the two checks agree on the same wire format.)
+
+### MUST 9 — record the run in `_meta/last-run.json` under the `linter` key
+
+After the audit (and after the self-check above passes), write your run record to `<vault>/_meta/last-run.json`. Preserve any existing `curator` section by jq-merging:
+
+```sh
+existing=$(cat "$VAULT/_meta/last-run.json" 2>/dev/null || echo '{}')
+record=$(jq -nc --arg ran_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+              --arg by "<identity passed by directive prompt>" \
+              --argjson findings_count <N> \
+              --argjson forced <true|false> \
+              '{ran_at: $ran_at, by: $by, findings_count: $findings_count, forced: $forced}')
+jq --argjson v "$record" '. + {linter: $v}' <<<"$existing" > "$VAULT/_meta/last-run.json.tmp"
+mv "$VAULT/_meta/last-run.json.tmp" "$VAULT/_meta/last-run.json"
+git -C "$VAULT" add _meta/last-run.json
+git -C "$VAULT" commit -m "kunskap: linter run record" -q
+```
+
+Use the identity-string (`<name>@<host>`) supplied by the directive prompt's `by:` value (the CLI passes it). Use the directive prompt's `forced:` value for the JSON boolean (true if the run was launched with `--force`). Do NOT update the `curator` section — the curator owns its own block. The run-record commit is metadata; it is not part of the audit findings stdout.
 
 ## The linter MUST NOT
 
 You MUST NOT:
 - **auto-fix any drift.** You surface findings; you never resolve them. The curator and humans own writes.
-- **modify any file** inside or outside the vault. Read-only is a hard contract; the test suite enforces it.
+- **modify any file** inside or outside the vault, except `_meta/last-run.json` (the SOLE whitelisted exception per MUST 8 + MUST 9 — record the run, nothing else).
 - **emit findings without a path/severity/suggested-action triple.** Vague findings are noise.
 - **run during a curator pass.** The linter is a separate manual invocation. Never spawn the curator from inside the linter.
 - **use `WebFetch` or `WebSearch`.** Disallowed in frontmatter; the wiki is closed-world.
@@ -147,8 +166,9 @@ Use `date -I` and ISO timestamps consistently. For "≥ N days ago" computations
 6. Run `kunskap link-stubs --vault "$VAULT" --format json` → emit `[STUB-CLUSTER]` for `needs-stub` entries with `refs >= 3`.
 7. Cross-read pairs of articles in `wiki/learnings/` + `wiki/ideas/` + `wiki/patterns/` → emit `[DRIFT]` for inconsistencies.
 8. If `_meta/roles.toml` exists, read primaries; run `git -C "$VAULT" log --since=30.days.ago --format=%aE -- .` → emit `[IDENTITY-MISMATCH]` for unfamiliar committers.
-9. Verify the read-only invariant: `git -C "$VAULT" status --porcelain` must be empty. If non-empty, abort with stderr error and exit non-zero (you violated MUST 8).
+9. Verify the read-only invariant: `git -C "$VAULT" status --porcelain --untracked-files=all` must be empty (no audit-side scratch writes). If non-empty, abort with stderr error and exit non-zero (you violated MUST 8). The run-record write happens in step 11 — do NOT include it in this self-check.
 10. Emit findings to stdout in the contract format.
+11. Write the run record to `_meta/last-run.json#linter` per MUST 9 (the SOLE permitted write), then `git add _meta/last-run.json` + `git commit -m "kunskap: linter run record"`. The CLI invariant check whitelists this exact path; touching anything else fails the run.
 
 If anything goes wrong mid-loop, exit non-zero with a clear stderr message. Partial findings already on stdout stand; the user/CI sees them and the failure together.
 

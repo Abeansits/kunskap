@@ -24,11 +24,16 @@ setup_file() {
 setup() {
   [[ -z "${BATS_BEHAVIORAL_SKIP:-}" ]] || skip "$BATS_BEHAVIORAL_SKIP"
   TMPVAULT="$(make_empty_init_vault)"
-  export TMPVAULT
+  TMPXDG="$(make_temp_xdg)"
+  export TMPVAULT TMPXDG
+  export XDG_CONFIG_HOME="$TMPXDG"
+  # P5: identity required for role check + run record. Empty-init vault ships
+  # roles.toml with primary="TBD" → role check warns and proceeds.
+  write_identity_toml "$TMPXDG"
 }
 
 teardown() {
-  cleanup_temp_dirs TMPVAULT
+  cleanup_temp_dirs TMPVAULT TMPXDG
 }
 
 run_linter() {
@@ -196,7 +201,9 @@ EOF
   echo "test note" > "$TMPVAULT/raw/inbox/note-bob.md"
   ( cd "$TMPVAULT" && git add . \
       && git -c user.email=bob@y -c user.name=bob commit -q -m "unauthorized writer" )
-  run run_linter
+  # The fixture identity ci@runner doesn't match alice@x; --force --yes
+  # bypasses the P5 role check so the audit can fire.
+  run run_linter --force --yes
   [[ "$output" == *"[IDENTITY-MISMATCH]"* ]]
 }
 

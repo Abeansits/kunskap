@@ -148,8 +148,26 @@ If a single inbox file has 2+ sub-findings going to different topic clusters: ci
    - `git -C "$VAULT" mv raw/inbox/<filename> Archives/processed-inbox/<filename>` (create the dir if missing).
    - `git -C "$VAULT" add wiki Archives` and `git -C "$VAULT" commit -m "kunskap: {extend|new|draft} <slug>" -m "source: <filename>"`.
 5. After all inbox files: optionally regenerate `<vault>/wiki/_index.md` and run the stub-discovery recipe; commit any stub/alias additions as a separate `kunskap: index + stub triage` commit (still atomic — this commit doesn't touch any article body).
+6. **Record the run.** Write `<vault>/_meta/last-run.json` with a `curator` block, **preserving any existing `linter` block via jq merge** (the linter writes its own block — never clobber it). Commit as a separate `kunskap: curator run record` commit. Atomicity: if the run crashes mid-loop, this commit never lands and the next run resumes cleanly from inbox state. The directive prompt supplies `by:`, `head_before:`, and `forced:`; you fill `ran_at:` (UTC ISO-8601 at end of loop), `inbox_processed:`, `articles_written:`, `drafts_routed:`, and `head_after:` (`git rev-parse HEAD` after the run-record commit's parent — see the recipe below). Use jq:
 
-If anything goes wrong mid-loop, exit non-zero with a clear stderr message. Previous commits stand; the current inbox file remains in `raw/inbox/`.
+   ```sh
+   existing=$(cat "$VAULT/_meta/last-run.json" 2>/dev/null || echo '{}')
+   record=$(jq -nc --arg ran_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+                 --arg by "<identity from directive prompt>" \
+                 --arg head_before "<head_before from directive prompt>" \
+                 --arg head_after "$(git -C "$VAULT" rev-parse HEAD)" \
+                 --argjson inbox_processed <N> \
+                 --argjson articles_written <M> \
+                 --argjson drafts_routed <K> \
+                 --argjson forced <true|false> \
+                 '{ran_at: $ran_at, by: $by, inbox_processed: $inbox_processed, articles_written: $articles_written, drafts_routed: $drafts_routed, head_before: $head_before, head_after: $head_after, forced: $forced}')
+   jq --argjson v "$record" '. + {curator: $v}' <<<"$existing" > "$VAULT/_meta/last-run.json.tmp"
+   mv "$VAULT/_meta/last-run.json.tmp" "$VAULT/_meta/last-run.json"
+   git -C "$VAULT" add _meta/last-run.json
+   git -C "$VAULT" commit -m "kunskap: curator run record" -q
+   ```
+
+If anything goes wrong mid-loop, exit non-zero with a clear stderr message. Previous commits stand; the current inbox file remains in `raw/inbox/`. The run-record commit (step 6) only fires if every inbox file routed cleanly — partial runs leave no run record, so the linter's `[CURATOR-IDLE]` clause naturally fires on the next vault audit.
 
 ## Edge-case guidance (from v0)
 
