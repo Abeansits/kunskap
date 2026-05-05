@@ -148,3 +148,21 @@ setup() {
   ! grep -E "^hooks:" "$CURATOR_AGENT"
   ! grep -E "^mcpServers:" "$CURATOR_AGENT"
 }
+
+# Drafts naming convention (design §Open decisions #5, folded into P3).
+# Curator must write `_drafts/<topic-slug>--<iso-date>.md`, NOT proposal-titled
+# files (which go stale). The CLI's drafts list/show/approve/reject/defer
+# expects this shape. P1 vault learning §1 pattern: codify in prompt + lock
+# with literal-string test.
+
+@test "Drafts naming convention spelled out (topic-slug + iso-date)" {
+  prompt_contains "_drafts/<topic-slug>--<iso-date>.md"
+}
+
+@test "Drafts naming convention also spelled out in MUST 3 routing" {
+  prompt_contains "<vault>/wiki/_drafts/<topic-slug>--<iso-date>.md"
+}
+
+@test "Drafts edge-case guidance explicitly rejects proposal-title naming" {
+  prompt_contains "Drafts named after their proposal title go stale"
+}

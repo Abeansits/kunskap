@@ -1,0 +1,8 @@
+.obsidian/workspace.json
+.obsidian/workspace.json.bak
+.DS_Store
+
+# Editor + OS junk
+*.swp
+.idea/
+.vscode/
