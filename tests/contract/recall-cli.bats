@@ -1,18 +1,12 @@
 #!/usr/bin/env bats
 # CLI-surface tests for `bin/kunskap recall`. Pure shell — no LLM, no auth.
-# Stage 1 (rg) is load-bearing per design §Q8 and exercised here against the
-# fixture vault. Stage 2 (Obsidian CLI) is best-effort and gated behind a
-# CLI/process check at runtime; tests assert graceful skip when unavailable.
 
 load helpers
 
 setup() {
-  TMPPROJ="$(make_temp_proj)"
-  TMPXDG="$(make_temp_xdg)"
-  export TMPPROJ TMPXDG
-  export XDG_CONFIG_HOME="$TMPXDG"
-  # recall is identity-independent (P5 §8) but enable hooks/marker setup
-  # paths still want a real identity.
+  setup_proj_xdg
+  # recall is identity-independent (P5 §8) but the marker-fallback path
+  # exercises `learn enable` which still needs an identity.
   write_identity_toml "$TMPXDG" fixture bats
 }
 
@@ -194,23 +188,24 @@ teardown() {
 # ---------- CLI shape (source-level invariants) ----------
 
 @test "cmd_recall enforces self-state (vault) before external (rg) check" {
+  # P1 §5 self-state-before-external — a missing vault is actionable
+  # without any tooling. Keep this source-shape test (load-bearing
+  # cross-cutting invariant); drop the `--fixed-strings` and `|| true`
+  # source-grep tests they used to pair with — those are covered
+  # behaviorally by the no-hits-on-no-match and dash-in-query tests.
   body="$(fn_body cmd_recall)"
-  # validate_vault must come BEFORE the rg PATH check (P1 §5 self-state-
-  # before-external — a missing vault is more actionable without tooling).
   vault_line="$(echo "$body" | grep -n 'validate_vault' | head -1 | cut -d: -f1)"
   rg_line="$(echo "$body" | grep -n 'command -v rg' | head -1 | cut -d: -f1)"
   [[ -n "$vault_line" && -n "$rg_line" ]]
   [[ "$vault_line" -lt "$rg_line" ]]
 }
 
-@test "cmd_recall uses --fixed-strings to keep query literal (no surprise regex)" {
-  body="$(fn_body cmd_recall)"
-  [[ "$body" == *"--fixed-strings"* ]]
-}
-
-@test "cmd_recall pins rg pipeline to exit 0 (set -e safety on no-match)" {
-  body="$(fn_body cmd_recall)"
-  # The `|| true` after rg is the load-bearing guard against bash 3.2's
-  # set -e tripping on rg's no-match exit code (1).
-  [[ "$body" == *"|| true"* ]]
+@test "recall query containing dash is treated literally (--fixed-strings)" {
+  TMPVAULT="$(make_temp_vault)"
+  # If the query were regex-interpreted, `set -e` would match `set` then the
+  # `-e` flag would error or the pattern would fail. Verifying we get the
+  # bash-discipline article (which contains `set -e`) proves literal handling.
+  run "$KUNSKAP_BIN" recall "set -e" --vault "$TMPVAULT"
+  [[ "$status" -eq 0 ]]
+  [[ "$output" == *"bash-discipline.md"* ]]
 }

@@ -603,18 +603,8 @@ cmd_lint() {
   [[ "$format" == "text" || "$format" == "json" ]] || die "lint: --format must be text or json (got: $format)"
   [[ ${#extra[@]} -eq 0 ]] || die "lint: unknown extra args: ${extra[*]}"
 
-  # Vault resolution: flag wins, else project marker (P2 enable pattern).
   local vault
-  if [[ -n "$vault_flag" ]]; then
-    vault="$vault_flag"
-  else
-    local marker
-    marker="$(marker_path)"
-    [[ -f "$marker" ]] \
-      || die "lint: no --vault and no project marker at $marker; pass --vault <abs> or run \`kunskap learn enable\` first"
-    vault="$(jq -r '.vault // ""' "$marker" 2>/dev/null || true)"
-    [[ -n "$vault" ]] || die "lint: marker $marker has no \`vault\` field"
-  fi
+  vault="$(resolve_vault_flag_or_marker lint "$vault_flag")"
   validate_vault "$vault"
 
   # Self-state checks before external (P1 §5). Plugin shape, then vault
@@ -1178,6 +1168,26 @@ cmd_init() {
 
 # Resolve the vault: --vault wins; otherwise read .claude/kunskap.json from
 # CLAUDE_PROJECT_DIR/PWD (matching hooks). Errors when neither resolves.
+# Resolve vault path: --vault flag wins, else project marker. Echoes the
+# path. Validation is the caller's responsibility (each subcommand has its
+# own preconditions — full kunskap vault for lint/recall, drafts dir for
+# `drafts`). Label prefixes the diagnostics so the user sees which command
+# failed.
+resolve_vault_flag_or_marker() {
+  local label="$1" explicit="$2"
+  if [[ -n "$explicit" ]]; then
+    printf '%s\n' "$explicit"
+    return 0
+  fi
+  local marker vault
+  marker="$(marker_path)"
+  [[ -f "$marker" ]] \
+    || die "$label: no --vault and no project marker at $marker; pass --vault <abs> or run \`kunskap learn enable\` first"
+  vault="$(jq -r '.vault // ""' "$marker")"
+  [[ -n "$vault" ]] || die "$label: marker $marker has no \`vault\` field"
+  printf '%s\n' "$vault"
+}
+
 resolve_drafts_vault() {
   local explicit="$1" marker vault
   if [[ -n "$explicit" ]]; then
@@ -1547,11 +1557,12 @@ cmd_drafts() {
   esac
 }
 
-# Read author + tags from a markdown file's frontmatter. Anchors detection to
-# NR == 1 per P3 §1+§2 — sed range patterns silently corrupt files whose body
-# contains horizontal-rule `---` lines, and an unanchored awk fails to handle
-# frontmatter-less files. Output: tab-separated `author<TAB>tags-csv` (empty
-# fields preserved). Tags accept inline (`tags: [a, b]`) or block list form.
+# Output `author<TAB>tags-csv` from frontmatter. Anchored to NR == 1 per
+# P3 §1+§2 — sed-range patterns silently corrupt files whose body contains
+# horizontal-rule `---`, and an unanchored awk drops frontmatter-less files.
+# Suggestion [Refactor] ✨: see `list_draft_records` (line 1207) for the same
+# scalar+block-list state machine on a different field set; v1.x candidate
+# for a shared `read_frontmatter_fields <file> <scalars> <lists>` helper.
 read_recall_frontmatter() {
   local file="$1"
   awk '
@@ -1596,10 +1607,9 @@ read_recall_frontmatter() {
   ' "$file"
 }
 
-# Detect a usable Obsidian CLI binary. Echoes the binary path on success and
-# returns 0; returns 1 (no output) when Stage-2 is unavailable for any reason
-# (no binary, app not running, CLI not enabled in Settings). Stage 1 (rg) is
-# load-bearing per design §Q8 — Stage 2 is best-effort and degrades silently.
+# Stage 1 (rg) is load-bearing per design §Q8 — Stage 2 (Obsidian CLI)
+# degrades silently when any check below fails. Returns 1 (no output) when
+# unavailable; otherwise echoes the binary path.
 detect_obsidian_bin() {
   local bin=""
   if command -v obsidian >/dev/null 2>&1; then
@@ -1610,22 +1620,22 @@ detect_obsidian_bin() {
     return 1
   fi
   pgrep -x Obsidian >/dev/null 2>&1 || return 1
-  # Verify the CLI is actually enabled in Obsidian Settings; without that
-  # toggle, the binary exists but emits "Command line interface is not
-  # enabled" on every call. `version` is a no-op smoke test.
-  "$bin" version >/dev/null 2>&1 || return 1
+  # `obsidian-cli version` exits 0 even when the CLI is disabled in Settings
+  # — it just prints "Command line interface is not enabled" and returns 0.
+  # Inspect the output to distinguish enabled from disabled.
+  local probe
+  probe="$( "$bin" version 2>&1 )" || return 1
+  [[ "$probe" != *"not enabled"* ]] || return 1
   printf '%s\n' "$bin"
 }
 
-# Run Obsidian's `search` against the vault. Echoes a newline-separated list
-# of vault-relative paths in Obsidian's relevance order (rank 0 = best match).
-# Best-effort: any failure returns 1 with no output, and the caller falls
-# back to rg-only ranking.
+# Best-effort: returns 1 with no output on any failure; caller falls back to
+# rg-only ranking. Per the Obsidian CLI docs, when CWD is a vault folder
+# Obsidian uses that vault by default — `cd "$vault"` is the targeting.
+# stderr is suppressed on the jq pipe because malformed Obsidian output is a
+# documented best-effort degradation, not a bug worth surfacing to users.
 run_obsidian_recall() {
   local bin="$1" vault="$2" query="$3"
-  # `vault=<name>` must be the first parameter (per CLI docs). Pass the
-  # vault path's basename — Obsidian matches by registered vault id/name.
-  # If the search fails (or returns non-JSON), the jq pipe yields nothing.
   ( cd "$vault" && "$bin" search query="$query" format=json 2>/dev/null ) \
     | jq -r 'if type=="array" then .[] | (if type=="object" then (.path // .file // empty) else . end) else empty end' 2>/dev/null \
     || return 1
@@ -1654,36 +1664,21 @@ cmd_recall() {
   [[ "$format" == "text" || "$format" == "json" ]] || die "recall: --format must be text or json (got: $format)"
   [[ "$limit" =~ ^[0-9]+$ ]] || die "recall: --limit must be a non-negative integer (got: $limit)"
 
-  # Vault resolution: --vault flag wins, else the project marker.
   local vault
-  if [[ -n "$vault_flag" ]]; then
-    vault="$vault_flag"
-  else
-    local marker
-    marker="$(marker_path)"
-    [[ -f "$marker" ]] \
-      || die "recall: no --vault and no project marker at $marker; pass --vault <abs> or run \`kunskap learn enable\` first"
-    vault="$(jq -r '.vault // ""' "$marker" 2>/dev/null || true)"
-    [[ -n "$vault" ]] || die "recall: marker $marker has no \`vault\` field"
-  fi
+  vault="$(resolve_vault_flag_or_marker recall "$vault_flag")"
   validate_vault "$vault"
 
-  # External-tool checks AFTER self-state (P1 §5): the user gets the vault
-  # error first if both are wrong, since the vault error is actionable
-  # without any tooling.
+  # Self-state before external (P1 §5): vault error is actionable without
+  # the tooling.
   command -v rg >/dev/null \
     || die "recall: \`rg\` not on PATH; install ripgrep first (\`brew install ripgrep\` or apt-get install ripgrep)"
   command -v jq >/dev/null \
     || die "recall: \`jq\` not on PATH; install jq first"
 
-  # Stage 1 (load-bearing): rg over wiki/ + raw/inbox/. Use --fixed-strings
-  # so users typing `kunskap recall "two-pass"` aren't surprised by regex
-  # interpretation of `-`. Hits are emitted as compact JSON one per line,
-  # paths normalized to vault-relative form.
-  #
-  # rg exits 1 when no matches are found, which trips `set -e` inside
-  # `$(...)` on bash 3.2 and dies before we can format the empty-result
-  # message — pin the pipeline to status 0 with `|| true`.
+  # --fixed-strings keeps queries literal (so `kunskap recall "two-pass"`
+  # isn't parsed as a regex). rg exits 1 on no matches and trips `set -e`
+  # inside `$(...)` on bash 3.2 — pin the pipeline to status 0 with
+  # `|| true` so the empty-result message can still print.
   local rg_hits
   rg_hits="$(
     { rg --json --type md --fixed-strings --no-messages -- "$query" \
@@ -1703,12 +1698,11 @@ cmd_recall() {
         '
   )"
 
-  # Per-file frontmatter lookup (author + tags). Bash 3.2 has no associative
-  # arrays, so emit a JSONL stream and let jq join in the merge step. One
-  # awk fork per unique path; recall on a 50-article vault touches ≤ 50.
+  # Per-file frontmatter (bash 3.2 has no assoc arrays — emit JSONL, jq
+  # joins below). One awk fork per unique path.
   local fm_jsonl
   fm_jsonl="$(
-    printf '%s\n' "$rg_hits" | jq -r 'select(. != null) | .path' 2>/dev/null | sort -u \
+    printf '%s\n' "$rg_hits" | jq -r 'select(. != null) | .path' | sort -u \
       | while IFS= read -r p; do
           [[ -z "$p" ]] && continue
           local meta a t
@@ -1725,15 +1719,14 @@ cmd_recall() {
         done
   )"
 
-  # Stage 2 (best-effort): Obsidian relevance ranks. Detection failures
-  # degrade silently to rg-only — Stage 1 carries the load (design §Q8).
+  # Stage 2: Obsidian relevance ranks (best-effort).
   local obs_jsonl="" obs_used=false
   local obs_bin obs_paths
   if obs_bin="$(detect_obsidian_bin)"; then
     if obs_paths="$(run_obsidian_recall "$obs_bin" "$vault" "$query")"; then
       obs_used=true
-      local idx=0
       obs_jsonl="$(
+        idx=0
         while IFS= read -r p; do
           [[ -z "$p" ]] && continue
           [[ "$p" == ./* ]] && p="${p#./}"
@@ -1744,10 +1737,6 @@ cmd_recall() {
     fi
   fi
 
-  # Merge rg hits with frontmatter and Obsidian ranks; filter, score, sort,
-  # truncate. Each --argjson takes a JSON array (built from JSONL via
-  # `jq -cs '.'`, defaulting to `[]` when the upstream pipeline produced
-  # nothing).
   local fm_array obs_array
   if [[ -n "$fm_jsonl" ]];  then fm_array="$(printf  '%s' "$fm_jsonl"  | jq -cs '.')"; else fm_array='[]';  fi
   if [[ -n "$obs_jsonl" ]]; then obs_array="$(printf '%s' "$obs_jsonl" | jq -cs '.')"; else obs_array='[]'; fi
@@ -1761,11 +1750,8 @@ cmd_recall() {
           --arg tag_filter "$tag" \
           --argjson fm  "$fm_array" \
           --argjson obs "$obs_array" '
-          # Path → frontmatter map.
           ($fm  | map({(.path): {author, tags}})  | add // {}) as $fmap |
-          # Path → Obsidian rank map.
           ($obs | map({(.path): .obs_rank})       | add // {}) as $omap |
-          # Per-file hit count = score.
           (group_by(.path) | map({(.[0].path): length}) | add // {}) as $score |
           map(
             . as $hit
@@ -1794,27 +1780,22 @@ cmd_recall() {
         '
   )"
 
-  if [[ "$format" == "json" ]]; then
-    printf '%s\n' "$hits_json" | jq '{hits: .}'
-  else
-    local n
-    n="$(printf '%s' "$hits_json" | jq 'length')"
-    if [[ "$n" -eq 0 ]]; then
-      echo "kunskap: no hits for \"$query\" in $vault"
-    else
-      printf '%s\n' "$hits_json" | jq -r '
-        .[]
-        | "- \(.path):\(.line) (score \(.score)\(if .obs_rank != null then ", obs#\(.obs_rank+1)" else "" end))"
-          + (if (.tags|length) > 0 then " [\(.tags | join(", "))]" else "" end)
-          + "\n    \(.snippet | gsub("^\\s+|\\s+$"; ""))"
-      '
-    fi
-  fi
-
-  # Exit code: 0 = at least one hit, 1 = no hits. JSON mode follows the same
-  # convention so shell consumers can pipeline cleanly.
   local hit_count
   hit_count="$(printf '%s' "$hits_json" | jq 'length')"
+
+  if [[ "$format" == "json" ]]; then
+    printf '%s\n' "$hits_json" | jq '{hits: .}'
+  elif [[ "$hit_count" -eq 0 ]]; then
+    echo "kunskap: no hits for \"$query\" in $vault"
+  else
+    printf '%s\n' "$hits_json" | jq -r '
+      .[]
+      | "- \(.path):\(.line) (score \(.score)\(if .obs_rank != null then ", obs#\(.obs_rank+1)" else "" end))"
+        + (if (.tags|length) > 0 then " [\(.tags | join(", "))]" else "" end)
+        + "\n    \(.snippet | gsub("^\\s+|\\s+$"; ""))"
+    '
+  fi
+
   [[ "$hit_count" -gt 0 ]] || return 1
   return 0
 }
