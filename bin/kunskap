@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="0.1.0"
+VERSION="0.2.0"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/kunskap"
 IDENTITY_FILE="$CONFIG_DIR/identity.toml"
+
+GLOBAL_VAULT=""
 
 die() { echo "kunskap: $*" >&2; exit 1; }
 
@@ -41,7 +43,11 @@ Usage:
   kunskap help    | --help
   kunskap config user --name <lowercase-slug> [--email <addr>] [--host <host>]
   kunskap config show
+  kunskap [--vault <abs-path>] config get <key>
   kunskap whoami [--quiet]
+  kunskap learn enable --vault <abs-path> [--yes]
+  kunskap learn disable
+  kunskap learn status
   kunskap curate --vault <abs-path> [--check]
   kunskap link-stubs --vault <abs-path> [--format text|json]
   kunskap audit-coverage --vault <abs-path> [--format text|json]
@@ -51,6 +57,15 @@ Notes:
   \`hostname -s\` which mutates on machine renames and silently breaks role
   checks at P5. See docs/kunskap-design.md §Q5 (Identity bootstrapping)
   and Risk #5 (Identity fragility).
+
+  \`learn enable\` writes \`.claude/kunskap.json\` in the current project
+  pointing at the given vault. Confirmation is required (Risk #7 — vault-leak
+  between projects); set KUNSKAP_AUTO_CONFIRM=1 or pass --yes for scripts.
+
+  \`config get <key>\` with --vault reads from <vault>/_meta/kunskap.toml
+  (keys: shared, name, created, schema_version); without --vault reads from
+  identity.toml (keys: name, email, host). Missing vault config file is
+  fail-soft: \`shared\` returns "false", other keys return empty.
 
   \`curate\` spawns the curator agent headlessly via \`claude --plugin-dir\`.
   Requires Claude Code on PATH and Anthropic auth configured.
@@ -71,19 +86,25 @@ write_identity() {
   } > "$IDENTITY_FILE"
 }
 
-read_identity_field() {
-  local field="$1"
-  [[ -f "$IDENTITY_FILE" ]] || return 1
-  awk -v f="$field" '
-    /^\[user\]/ { in_user = 1; next }
-    /^\[/       { in_user = 0; next }
-    in_user && $1 == f {
-      sub(/^[^=]*=[[:space:]]*"/, "")
-      sub(/"[[:space:]]*$/, "")
+# Minimal TOML reader for `<section>.<field>`. Full compliance is P5's job.
+read_toml_field() {
+  local file="$1" section="$2" field="$3"
+  [[ -f "$file" ]] || return 1
+  awk -v sec="[$section]" -v f="$field" '
+    $0 == sec    { in_sec = 1; next }
+    /^\[/        { in_sec = 0; next }
+    in_sec && $1 == f {
+      sub(/^[^=]*=[[:space:]]*/, "")
+      sub(/[[:space:]]*(#.*)?$/, "")
+      sub(/^"/, ""); sub(/"$/, "")
       print
       exit
     }
-  ' "$IDENTITY_FILE"
+  ' "$file"
+}
+
+read_identity_field() {
+  read_toml_field "$IDENTITY_FILE" user "$1"
 }
 
 # --name is lowercase-only to pre-empt Paul/paul collisions in the P5
@@ -145,13 +166,42 @@ cmd_config_show() {
   cat "$IDENTITY_FILE"
 }
 
+cmd_config_get() {
+  [[ $# -eq 1 ]] || die "config get: takes exactly one <key> argument (got: $*)"
+  local key="$1"
+
+  if [[ -n "$GLOBAL_VAULT" ]]; then
+    local file="$GLOBAL_VAULT/_meta/kunskap.toml"
+    case "$key" in
+      shared|name|created|schema_version) ;;
+      *) die "config get: unknown vault key: $key (allowed: shared, name, created, schema_version)" ;;
+    esac
+    if [[ ! -f "$file" ]]; then
+      # Fail-soft: P3 ships `kunskap init`, so vaults predate _meta/kunskap.toml.
+      # Hooks treat missing-or-unknown as not-shared and skip pull/push.
+      [[ "$key" == "shared" ]] && echo "false"
+      return 0
+    fi
+    read_toml_field "$file" vault "$key"
+    return 0
+  fi
+
+  case "$key" in
+    name|email|host) ;;
+    *) die "config get: unknown user key: $key (allowed: name, email, host); use --vault for vault keys" ;;
+  esac
+  [[ -f "$IDENTITY_FILE" ]] || return 0
+  read_identity_field "$key"
+}
+
 cmd_config() {
   local sub="${1:-}"
   shift || true
   case "$sub" in
     user) cmd_config_user "$@" ;;
     show) cmd_config_show "$@" ;;
-    "")   die "config: subcommand required (user | show)" ;;
+    get)  cmd_config_get "$@"  ;;
+    "")   die "config: subcommand required (user | show | get)" ;;
     *)    die "config: unknown subcommand: $sub" ;;
   esac
 }
@@ -173,6 +223,198 @@ cmd_whoami() {
     exit 1
   fi
   $quiet || echo "$name@$host"
+}
+
+project_dir() {
+  printf '%s\n' "${CLAUDE_PROJECT_DIR:-$PWD}"
+}
+
+marker_path() {
+  printf '%s/.claude/kunskap.json\n' "$(project_dir)"
+}
+
+# Looser than validate_vault — `learn enable` may point at a not-yet-init'd
+# vault (P3 ships `kunskap init`), so we only require absolute + extant + dir.
+validate_vault_loose() {
+  local vault="$1"
+  [[ "$vault" = /* ]] || die "--vault must be an absolute path (got: $vault)"
+  [[ -e "$vault" ]] || die "--vault path does not exist: $vault"
+  [[ -d "$vault" ]] || die "--vault path is not a directory: $vault"
+}
+
+cmd_learn_enable() {
+  local vault="" yes=false extra=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --vault) require_value --vault "${2-__MISSING__}"; vault="$2"; shift 2 ;;
+      --yes|-y) yes=true; shift ;;
+      *) extra+=("$1"); shift ;;
+    esac
+  done
+  [[ -n "$vault" ]] || die "learn enable: --vault <abs-path> is required"
+  [[ ${#extra[@]} -eq 0 ]] || die "learn enable: unknown extra args: ${extra[*]}"
+  validate_vault_loose "$vault"
+
+  # Risk #7 (vault-leak between projects) mitigation. The marker file is the
+  # privacy primitive — wrong vault = personal notes pushed to the team's
+  # research vault, or vice versa. Confirm before writing.
+  local proj
+  proj="$(project_dir)"
+
+  if ! $yes && [[ "${KUNSKAP_AUTO_CONFIRM:-}" != "1" ]]; then
+    # Risk #7 (vault-leak): labeled lines reduce path-noise misreads. Wrong
+    # vault here = personal notes pushed to team vault (or vice versa).
+    {
+      printf 'Enable Kunskap with the following binding?\n'
+      printf '  PROJECT: %s\n' "$proj"
+      printf '  VAULT:   %s\n' "$vault"
+      printf 'Proceed? (y/N) '
+    } >&2
+    local reply=""
+    read -r reply || true
+    [[ "$reply" =~ ^[Yy]$ ]] || die "learn enable: cancelled (no marker written)"
+  fi
+
+  local marker confirmed_at
+  marker="$(marker_path)"
+  confirmed_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  mkdir -p "$(dirname "$marker")"
+  cat > "$marker" <<EOF
+{
+  "vault": "$vault",
+  "enabled": true,
+  "confirmed_at": "$confirmed_at"
+}
+EOF
+  echo "kunskap: enabled in $proj. Vault: $vault. Run \`kunskap learn status\` (or /kunskap:learn status) to verify."
+}
+
+cmd_learn_disable() {
+  [[ $# -eq 0 ]] || die "learn disable: takes no arguments (got: $*)"
+  local proj marker
+  proj="$(project_dir)"
+  marker="$(marker_path)"
+  if [[ ! -f "$marker" ]]; then
+    echo "kunskap: not enabled in $proj (no marker at $marker)"
+    return 0
+  fi
+  rm -f "$marker"
+  echo "kunskap: disabled in $proj (removed $marker)"
+}
+
+# Pure-shell to bridge GNU/BSD date flag differences.
+days_since() {
+  local iso="$1" now_epoch then_epoch
+  iso="${iso:0:10}"
+  [[ "$iso" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || { echo "?"; return; }
+  now_epoch=$(date -u +%s)
+  if then_epoch=$(date -u -j -f "%Y-%m-%d" "$iso" +%s 2>/dev/null); then :
+  elif then_epoch=$(date -u -d "$iso" +%s 2>/dev/null); then :
+  else echo "?"; return
+  fi
+  printf '%d\n' "$(( (now_epoch - then_epoch) / 86400 ))"
+}
+
+cmd_learn_status() {
+  [[ $# -eq 0 ]] || die "learn status: takes no arguments (got: $*)"
+  local marker
+  marker="$(marker_path)"
+  if [[ ! -f "$marker" ]]; then
+    echo "STATUS: disabled (no marker at $marker)"
+    return 0
+  fi
+
+  local vault enabled confirmed_at
+  vault="$(jq -r '.vault // ""' "$marker" 2>/dev/null || true)"
+  enabled="$(jq -r '.enabled // false' "$marker" 2>/dev/null || true)"
+  confirmed_at="$(jq -r '.confirmed_at // ""' "$marker" 2>/dev/null || true)"
+
+  echo "STATUS: ${enabled:-unknown}"
+  echo "VAULT:  ${vault:-<unset>}"
+
+  local identity name host
+  if name="$(read_identity_field name 2>/dev/null)" && [[ -n "$name" ]] \
+     && host="$(read_identity_field host 2>/dev/null)" && [[ -n "$host" ]]; then
+    identity="$name@$host"
+    echo "IDENTITY: $identity"
+  else
+    identity=""
+    echo "IDENTITY: not set — run \`kunskap config user --name <slug> --host <host>\`"
+  fi
+
+  local shared=""
+  if [[ -z "$vault" || ! -d "$vault" ]]; then
+    echo "SHARED: unknown — vault path missing or unreadable"
+  elif [[ ! -f "$vault/_meta/kunskap.toml" ]]; then
+    echo "SHARED: unknown — vault not initialized (P3: \`kunskap init\`)"
+  else
+    shared="$(read_toml_field "$vault/_meta/kunskap.toml" vault shared 2>/dev/null || true)"
+    echo "SHARED: ${shared:-unknown}"
+  fi
+
+  # Remote health is a top failure mode for shared vaults — surface it so
+  # users see "no origin remote" before their first session-end push fails.
+  if [[ "$shared" == "true" && -d "$vault/.git" ]]; then
+    local remote=""
+    remote="$(git -C "$vault" remote get-url origin 2>/dev/null || true)"
+    if [[ -n "$remote" ]]; then
+      echo "REMOTE: $remote"
+    else
+      echo "REMOTE: not configured (no \`origin\` remote — pushes will fail)"
+    fi
+  fi
+
+  # Risk #5 (identity fragility) cross-check: if identity-string appears as a
+  # role primary in any roles.toml section, status confirms; mismatch warns.
+  local roles_file="$vault/_meta/roles.toml"
+  if [[ -n "$identity" && -f "$roles_file" ]]; then
+    local matched=""
+    for role in curator linter; do
+      local primary
+      primary="$(read_toml_field "$roles_file" "roles.$role" primary 2>/dev/null || true)"
+      [[ "$primary" == "$identity" ]] && matched="$matched $role"
+    done
+    if [[ -n "$matched" ]]; then
+      echo "ROLE-CHECK: primary for$matched"
+    else
+      local cur lin
+      cur="$(read_toml_field "$roles_file" roles.curator primary 2>/dev/null || true)"
+      lin="$(read_toml_field "$roles_file" roles.linter  primary 2>/dev/null || true)"
+      echo "ROLE-CHECK: not primary (curator: ${cur:-<unset>}; linter: ${lin:-<unset>})"
+    fi
+  elif [[ -n "$identity" ]]; then
+    echo "ROLE-CHECK: no roles file (vault not yet initialized — P3/P5)"
+  else
+    echo "ROLE-CHECK: skipped (identity not set)"
+  fi
+
+  if [[ -n "$confirmed_at" ]]; then
+    local days
+    days="$(days_since "$confirmed_at")"
+    if [[ "$days" =~ ^[0-9]+$ ]]; then
+      echo "CONFIRMED: $confirmed_at (${days}d ago)"
+      # Risk #7 (vault-leak) staleness warning.
+      if (( days > 30 )); then
+        echo "WARNING: confirmation is >30 days old. Re-run \`kunskap learn enable --vault <path>\` to re-confirm the binding (Risk #7)." >&2
+      fi
+    else
+      echo "CONFIRMED: $confirmed_at (age unparseable)"
+    fi
+  else
+    echo "CONFIRMED: <unset>"
+  fi
+}
+
+cmd_learn() {
+  local sub="${1:-}"
+  shift || true
+  case "$sub" in
+    enable)  cmd_learn_enable  "$@" ;;
+    disable) cmd_learn_disable "$@" ;;
+    status)  cmd_learn_status  "$@" ;;
+    "")      die "learn: subcommand required (enable | disable | status)" ;;
+    *)       die "learn: unknown subcommand: $sub" ;;
+  esac
 }
 
 cmd_curate() {
@@ -416,6 +658,15 @@ cmd_audit_coverage() {
 }
 
 main() {
+  # Pre-dispatch globals are consumed only when they precede the first
+  # non-flag token; subcommand-local `--vault` (curate, learn enable) is
+  # still parsed inside the subcommand.
+  while [[ $# -gt 0 && "$1" == --vault ]]; do
+    require_value --vault "${2-__MISSING__}"
+    GLOBAL_VAULT="$2"
+    shift 2
+  done
+
   local cmd="${1:-help}"
   shift || true
   case "$cmd" in
@@ -423,6 +674,7 @@ main() {
     help|--help|-h)           cmd_help ;;
     config)                   cmd_config "$@" ;;
     whoami)                   cmd_whoami "$@" ;;
+    learn)                    cmd_learn "$@" ;;
     curate)                   cmd_curate "$@" ;;
     link-stubs)               cmd_link_stubs "$@" ;;
     audit-coverage)           cmd_audit_coverage "$@" ;;

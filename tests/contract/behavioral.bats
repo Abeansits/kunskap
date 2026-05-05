@@ -100,6 +100,26 @@ run_curator() {
   grep -E "^aliases:.*threat-led readme hook" "$TMPVAULT/wiki/patterns/threat-led-readme-hook.md"
 }
 
+@test "Adversarial — Lane-1-prose / Lane-2-body routes to _drafts (policy, not prose)" {
+  # Fixture #10: prose self-classifies as "Lane 1: additive extension" but the
+  # body proposes changing the meaning of bash-discipline.md's documented
+  # rule. Curator MUST route by body content, not by the prose label.
+  # See P1 vault learning §6 and tests/fixtures/.../10-adversarial-*.md.
+  run_curator
+  ls "$TMPVAULT/wiki/_drafts/" 2>/dev/null \
+    | grep -E "(bash-discipline|var-die|set-e)" >/dev/null
+}
+
+@test "Adversarial — Lane-2-prose / Lane-1-body extends rather than drafts" {
+  # Fixture #11: prose says "Lane 2: needs review" but the body is purely
+  # additive (sixth confirmation under an explicit invitation footer).
+  # Curator MUST extend the existing article and NOT route to _drafts/.
+  run_curator
+  grep -E "N=6|sixth|6th confirmation" "$TMPVAULT/wiki/learnings/two-pass-codex-review.md"
+  ! ls "$TMPVAULT/wiki/_drafts/" 2>/dev/null \
+    | grep -E "(two-pass-codex-review).*adversarial" >/dev/null
+}
+
 @test "MUST 5 — vault scope: no writes outside the temp vault" {
   before="$(stat -f %m "$REPO_ROOT/agents/curator.md")"
   run_curator

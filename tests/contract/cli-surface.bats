@@ -192,11 +192,14 @@ EOF
 }
 
 @test "audit-coverage flags inbox files not yet cited (silent drops)" {
-  # Pre-curator state: nothing in raw/inbox/ is cited yet; expected to flag all 9.
+  # Pre-curator state: nothing in raw/inbox/ is cited yet; expected to flag
+  # every inbox file. Match dynamically against the actual fixture count so
+  # adding a fixture note doesn't drift this assertion.
+  expected=$(find "$FIXTURE_VAULT/raw/inbox" -name '*.md' | wc -l | tr -d ' ')
   run "$KUNSKAP_BIN" audit-coverage --vault "$TMPVAULT" --format json
   [[ "$status" -eq 2 ]]   # exits 2 when there are findings
   drops=$(echo "$output" | jq '.silent_drops | length')
-  [[ "$drops" -eq 9 ]]
+  [[ "$drops" -eq "$expected" ]]
 }
 
 @test "audit-coverage covered_count reflects archive entries cited in fixture wiki" {
@@ -218,9 +221,13 @@ EOF
 
 # ---------- fixture sanity ----------
 
-@test "fixture vault has the 9 inbox notes the contract suite expects" {
+@test "fixture vault includes the 9 baseline + adversarial inbox notes" {
   count=$(find "$TMPVAULT/raw/inbox" -name '*.md' | wc -l | tr -d ' ')
-  [[ "$count" -eq 9 ]]
+  [[ "$count" -ge 9 ]]
+  # Adversarial fixtures (P1-deferred, folded into P2) — prose-label vs body
+  # disagreement, asserted-by-policy in behavioral.bats.
+  adv=$(find "$TMPVAULT/raw/inbox" -name '*adversarial*.md' | wc -l | tr -d ' ')
+  [[ "$adv" -eq 2 ]]
 }
 
 @test "fixture vault hand-edit trap article carries the HUMAN HAND-EDIT marker" {

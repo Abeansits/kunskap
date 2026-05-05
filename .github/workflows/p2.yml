@@ -1,0 +1,147 @@
+name: P2 — opt-in surface + sync hooks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash -euo pipefail {0}
+
+jobs:
+  p2:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install bats + jq
+        run: sudo apt-get update -qq && sudo apt-get install -y bats jq
+
+      # ---------- shellcheck on every shell artifact ----------
+
+      - name: shellcheck bin/kunskap + hooks
+        run: |
+          shellcheck -e SC1090,SC1091 bin/kunskap hooks/session-start.sh hooks/session-end.sh
+          shellcheck hooks/_shared.sh
+
+      - name: hooks scripts are executable
+        run: |
+          test -x hooks/session-start.sh
+          test -x hooks/session-end.sh
+
+      # ---------- hooks.json shape (no public JSON-schema; jq+structural) ----------
+
+      - name: hooks/hooks.json parses
+        run: jq empty hooks/hooks.json
+
+      - name: hooks.json declares SessionStart and SessionEnd entries
+        run: |
+          jq -e '.hooks.SessionStart and .hooks.SessionEnd' hooks/hooks.json
+          jq -e '.hooks.SessionStart | type == "array" and length >= 1' hooks/hooks.json
+          jq -e '.hooks.SessionEnd   | type == "array" and length >= 1' hooks/hooks.json
+
+      - name: hooks.json entries point at command-type hooks under \${CLAUDE_PLUGIN_ROOT}
+        run: |
+          for ev in SessionStart SessionEnd; do
+            jq -e ".hooks.${ev}[0].matcher | type == \"string\""        hooks/hooks.json
+            jq -e ".hooks.${ev}[0].hooks   | length >= 1"               hooks/hooks.json
+            jq -e ".hooks.${ev}[0].hooks[0].type == \"command\""        hooks/hooks.json
+            cmd=$(jq -r ".hooks.${ev}[0].hooks[0].command"              hooks/hooks.json)
+            [[ "$cmd" == *'${CLAUDE_PLUGIN_ROOT}'* ]] \
+              || { echo "${ev} command does not reference \${CLAUDE_PLUGIN_ROOT}: $cmd"; exit 1; }
+          done
+
+      - name: hook scripts referenced in hooks.json exist on disk
+        run: |
+          for ev in SessionStart SessionEnd; do
+            cmd=$(jq -r ".hooks.${ev}[0].hooks[0].command" hooks/hooks.json)
+            rel="${cmd//\$\{CLAUDE_PLUGIN_ROOT\}\//}"
+            [[ -f "$rel" ]] || { echo "missing referenced script: $rel"; exit 1; }
+          done
+
+      # ---------- plugin.json: P0-deferred fuller validation ----------
+      # Anthropic doesn't publish a JSON-schema yet. We assert the documented
+      # field shapes and types from /en/plugins-reference#plugin-manifest-schema.
+
+      - name: plugin.json — required + typed manifest fields
+        run: |
+          jq -e '.name | type == "string"'                                  .claude-plugin/plugin.json
+          jq -e '.name | test("^[a-z][a-z0-9-]*$")'                          .claude-plugin/plugin.json
+          for f in version description license; do
+            jq -e ".${f} | type == \"string\""                              .claude-plugin/plugin.json
+          done
+          jq -e '.author | type == "object"'                                 .claude-plugin/plugin.json
+          jq -e '.author.name | type == "string"'                            .claude-plugin/plugin.json
+          jq -e '.repository | type == "string"'                             .claude-plugin/plugin.json
+          jq -e '.keywords | type == "array" and all(type == "string")'      .claude-plugin/plugin.json
+          jq -e '
+            [keys[]] - ["$schema","name","version","description","author","repository","license","homepage","keywords"]
+            | length == 0
+          ' .claude-plugin/plugin.json
+
+      # ---------- bin/kunskap surface health ----------
+
+      - name: bin/kunskap version matches manifest
+        run: |
+          manifest=$(jq -r .version .claude-plugin/plugin.json)
+          out=$(./bin/kunskap version)
+          [[ "$out" == "kunskap $manifest" ]] \
+            || { echo "drift: bin says '$out', plugin.json says '$manifest'"; exit 1; }
+
+      - name: bin/kunskap help mentions learn + config get
+        run: |
+          ./bin/kunskap help | grep -q 'learn enable'
+          ./bin/kunskap help | grep -q 'learn disable'
+          ./bin/kunskap help | grep -q 'learn status'
+          ./bin/kunskap help | grep -q 'config get <key>'
+
+      # ---------- bats suites (counts derived dynamically — no drifty strings) ----------
+
+      # P1 §7: counts get printed dynamically; never encoded in step names.
+      - name: list test counts
+        run: |
+          for f in tests/contract/*.bats; do
+            n=$(grep -c '^@test ' "$f")
+            printf '  %-30s %d cases\n' "$(basename "$f")" "$n"
+          done
+
+      - name: bats — learn CLI surface
+        run: bats tests/contract/learn-cli.bats
+
+      - name: bats — config get + global --vault
+        run: bats tests/contract/config-cli.bats
+
+      - name: bats — hooks fail-soft smoke
+        run: bats tests/contract/hooks-smoke.bats
+
+      - name: bats — P1 CLI surface (regression)
+        run: bats tests/contract/cli-surface.bats
+
+      - name: bats — P1 static prompt-contract (regression)
+        run: bats tests/contract/static-prompt.bats
+
+      - name: bats — behavioral suite (skipped without KUNSKAP_LIVE_TESTS=1)
+        run: bats tests/contract/behavioral.bats
+
+      # ---------- drift lint (P1 vault learning §7) ----------
+
+      - name: CHANGELOG/README contain no hardcoded test counts
+        run: |
+          # P1 lesson: any "(N tests)" string in CHANGELOG/README will drift the
+          # next time the suite grows. CI must reject the drift-prone shape.
+          if grep -nE '\([0-9]+ tests?\)' CHANGELOG.md README.md 2>/dev/null; then
+            echo "drift: hardcoded test count in CHANGELOG/README — remove or compute it dynamically"
+            exit 1
+          fi
+
+      - name: CHANGELOG/README do not name retired CI workflow files
+        run: |
+          # validate.yml was renamed to p0.yml in P0; a stray reference would drift.
+          if grep -nE 'validate\.yml' CHANGELOG.md README.md 2>/dev/null; then
+            echo "drift: CHANGELOG/README references retired validate.yml"
+            exit 1
+          fi

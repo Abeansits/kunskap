@@ -30,3 +30,18 @@ make_temp_vault() {
 prompt_contains() {
   grep -Fq "$1" "$CURATOR_AGENT"
 }
+
+make_temp_proj() { mktemp -d -t kunskap-proj.XXXXXX; }
+make_temp_xdg()  { mktemp -d -t kunskap-xdg.XXXXXX; }
+
+# Write identity.toml directly (skips a `kunskap config user` fork — used in
+# hot setup paths like hooks-smoke.bats that need identity but not its CLI).
+write_identity_toml() {
+  local xdg="$1" name="${2:-ci}" host="${3:-runner}"
+  mkdir -p "$xdg/kunskap"
+  cat > "$xdg/kunskap/identity.toml" <<EOF
+[user]
+name  = "$name"
+host  = "$host"
+EOF
+}
