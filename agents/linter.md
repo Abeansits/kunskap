@@ -26,6 +26,8 @@ When invoked with `--format json` (the directive prompt will say so), emit a JSO
 
 Group human-readable text output by severity (errors first, then warnings, then info). Within a severity group, sort by type alphabetically.
 
+**Deterministic ordering — JSON mode**: sort the `findings` array by `(severity, type, path, message)` lexicographically. Determinism matters because the design path forward includes a v2 GH Actions cron that will diff successive runs; non-deterministic ordering reduces every meaningful change to noise. If you cannot establish a stable order on a tied tuple, fall back to the order the findings were produced in.
+
 ## The linter MUST (each clause maps to a static-prompt test)
 
 ### MUST 1 — find drift across articles
@@ -67,7 +69,9 @@ Read `_meta/last-run.json` if it exists. The shape (per design §Q4):
 { "curator": { "ran_at": "2026-05-03T...", "by": "sebastian@laptop", ... } }
 ```
 
-For every inbox note in `raw/inbox/*.md` AND every archived note in `Archives/processed-inbox/*.md`, parse the frontmatter `author:` field. If a note's `author:` does **not** equal the identity in `_meta/last-run.json#curator.by`, AND the note's `created:` is **≥ 48 hours** before the curator's `ran_at`, emit `[OFFLINE-ARRIVAL]`.
+For every inbox note in `raw/inbox/*.md` AND every archived note in `Archives/processed-inbox/*.md`, parse the frontmatter `author:` field. If a note's `author:` does **not** equal the identity in `_meta/last-run.json#curator.by`, AND the note's `created:` is **≥ 48 hours** before the curator's `ran_at`, AND the note's `created:` is within the last **14 days** (recent enough to plausibly be an offline-arrival rather than pre-curator-era backlog), emit `[OFFLINE-ARRIVAL]`.
+
+The 14-day upper bound matters on a brand-new shared vault that imports historical archives: without it, every pre-existing inbox note from an author other than the first curator would be flagged as `[OFFLINE-ARRIVAL]`. The intent of MUST 4 is "did this contributor write WHILE the curator ran without them" — backlog from before the curator existed isn't an offline arrival.
 
 This is the load-bearing check for Risk #4 (Matt-offline-for-a-week): inbox notes from authors not seen in `_meta/last-run.json` for ≥48h pile up while the curator runs against a stale view.
 
@@ -101,7 +105,9 @@ A finding without a path/severity/suggested-action triple is useless. **Never em
 
 You MUST NOT write to `wiki/`. You MUST NOT modify `_meta/last-run.json`. You MUST NOT touch `Archives/`. You MUST NOT add, modify, or remove any file inside `$ARGUMENTS`. You produce findings on stdout; that is your only side effect.
 
-Test this invariant by running `git status --porcelain` inside `$ARGUMENTS` after your audit completes. If the output is non-empty, you violated the contract — abort with a stderr error and exit non-zero.
+**The CLI is the authoritative invariant check** — `bin/kunskap lint` snapshots `git status --porcelain --untracked-files=all` AND `git rev-parse HEAD` before and after your run, and exits 2 with a stderr diff if either changed. Your own self-check (described below) is **best-effort defense in depth**, not the trust boundary; if your self-check passes but the CLI's catches a mutation, the CLI is right and you violated the contract.
+
+Run `git status --porcelain --untracked-files=all` inside `$ARGUMENTS` after your audit completes. If the output is non-empty AND non-equal to whatever was there at run start, abort with a stderr error and exit non-zero. (Match the CLI's snapshot flags so the two checks agree on the same wire format.)
 
 ## The linter MUST NOT
 

@@ -184,6 +184,47 @@ teardown() {
   grep -q 'rev-parse --is-inside-work-tree' "$KUNSKAP_BIN"
 }
 
+@test "lint refuses to run when vault is mid-rebase (.git/rebase-merge present)" {
+  TMPVAULT="$(make_temp_vault)"
+  mkdir -p "$TMPVAULT/.git/rebase-merge"
+  # Ordering: rebase guard must fire BEFORE the claude-on-PATH check so the
+  # error message is actionable even on a CI host without claude installed
+  # (P1 §5: self-state before external — vault state IS self-state).
+  PATH="/usr/bin:/bin" run "$KUNSKAP_BIN" lint --vault "$TMPVAULT"
+  rmdir "$TMPVAULT/.git/rebase-merge"
+  [[ "$status" -ne 0 ]]
+  [[ "$output" == *"mid-rebase"* ]]
+  [[ "$output" == *"rebase --continue"* ]]
+  [[ "$output" != *"claude"*"PATH"* ]]
+}
+
+@test "lint refuses to run when vault is mid-rebase (.git/rebase-apply present)" {
+  TMPVAULT="$(make_temp_vault)"
+  mkdir -p "$TMPVAULT/.git/rebase-apply"
+  run "$KUNSKAP_BIN" lint --vault "$TMPVAULT"
+  rmdir "$TMPVAULT/.git/rebase-apply"
+  [[ "$status" -ne 0 ]]
+  [[ "$output" == *"mid-rebase"* ]]
+}
+
+@test "lint refuses to run when vault has MERGE_HEAD" {
+  TMPVAULT="$(make_temp_vault)"
+  : > "$TMPVAULT/.git/MERGE_HEAD"
+  run "$KUNSKAP_BIN" lint --vault "$TMPVAULT"
+  rm -f "$TMPVAULT/.git/MERGE_HEAD"
+  [[ "$status" -ne 0 ]]
+  [[ "$output" == *"merge"* ]]
+}
+
+@test "lint refuses to run when vault has CHERRY_PICK_HEAD" {
+  TMPVAULT="$(make_temp_vault)"
+  : > "$TMPVAULT/.git/CHERRY_PICK_HEAD"
+  run "$KUNSKAP_BIN" lint --vault "$TMPVAULT"
+  rm -f "$TMPVAULT/.git/CHERRY_PICK_HEAD"
+  [[ "$status" -ne 0 ]]
+  [[ "$output" == *"cherry-pick"* ]]
+}
+
 @test "bin/kunskap correctly captures agent exit code without ! inversion" {
   # Pass-1 block-ship: `if ! cmd; then x=$?; fi` returns 0 (status of !),
   # losing the real failure code. The correct form is `if cmd; then 0;

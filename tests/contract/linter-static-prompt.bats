@@ -89,6 +89,16 @@ setup() {
   linter_prompt_contains "Group human-readable text output by severity"
 }
 
+@test "MUST 7 — JSON mode requires deterministic ordering for cron-diff (Pass-2)" {
+  linter_prompt_contains "Deterministic ordering — JSON mode"
+  linter_prompt_contains "(severity, type, path, message)\` lexicographically"
+}
+
+@test "MUST 8 — CLI is the authoritative invariant check; agent self-check is best-effort (Pass-2)" {
+  linter_prompt_contains "CLI is the authoritative invariant check"
+  linter_prompt_contains "best-effort defense in depth"
+}
+
 # ---------- MUST clauses (each finding type has its own fingerprint) ----------
 
 @test "MUST 1 — DRIFT finding type is mandated" {
@@ -138,6 +148,11 @@ setup() {
   linter_prompt_contains "_meta/last-run.json"
   linter_prompt_contains "curator.by"
   linter_prompt_contains "≥ 48 hours"
+}
+
+@test "MUST 4 — 14d upper bound prevents brand-new-vault backlog spam (Pass-2)" {
+  linter_prompt_contains "within the last **14 days**"
+  linter_prompt_contains "pre-curator-era backlog"
 }
 
 @test "MUST 5 — CURATOR-IDLE finding type + 48h threshold" {
