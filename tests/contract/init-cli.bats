@@ -16,8 +16,7 @@ setup() {
 }
 
 teardown() {
-  [[ -n "${TMPTARGET:-}" && -d "$TMPTARGET" ]] && rm -rf "$TMPTARGET"
-  [[ -n "${TMPXDG:-}"    && -d "$TMPXDG"    ]] && rm -rf "$TMPXDG"
+  cleanup_temp_dirs TMPTARGET TMPXDG
 }
 
 # ---------- arg parsing ----------
