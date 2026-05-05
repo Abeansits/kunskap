@@ -496,7 +496,7 @@ cmd_lint() {
   validate_vault "$vault"
 
   # Self-state checks before external (P1 §5): plugin shape before claude PATH.
-  local root prompt_format prompt
+  local root prompt
   root="$(plugin_root)"
   [[ -f "$root/agents/linter.md" ]] \
     || die "lint: linter agent not found at $root/agents/linter.md (plugin_root resolved to $root; set CLAUDE_PLUGIN_ROOT to override)"
@@ -504,8 +504,7 @@ cmd_lint() {
 
   # Read-only invariant snapshot — capture BEFORE so a pre-existing dirty
   # vault isn't blamed on the linter (P3 §3 lesson on scaffold-overlay
-  # contracts: never gate on a clean state we didn't establish). The check
-  # below compares pre vs post; non-equal = the agent wrote.
+  # contracts: never gate on a clean state we didn't establish).
   local status_before status_after
   if [[ -d "$vault/.git" ]]; then
     status_before="$(git -C "$vault" status --porcelain 2>/dev/null || true)"
@@ -513,25 +512,24 @@ cmd_lint() {
     status_before=""
   fi
 
-  prompt_format="$format"
   prompt="You have one task: invoke the \`linter\` subagent (defined in this plugin's agents/linter.md) via the Agent tool, passing this exact string as its ARGUMENTS:
 
 $vault
 
-The linter's system prompt encodes the full read-only audit contract — it knows what to do once it has the vault path. Output format: $prompt_format. If the format is \"json\", instruct the linter to emit a single JSON object with a \`findings: [...]\` array of {type, severity, path, message, suggested_action} records (and NO human-readable text). If \"text\", findings are one per line in the shape \`[TYPE] path | message\`, grouped by severity.
+The linter's system prompt encodes the full read-only audit contract — it knows what to do once it has the vault path. Output format: $format. If the format is \"json\", instruct the linter to emit a single JSON object with a \`findings: [...]\` array of {type, severity, path, message, suggested_action} records (and NO human-readable text). If \"text\", findings are one per line in the shape \`[TYPE] path | message\`, grouped by severity.
 
 Do NOT attempt the audit yourself; the linter subagent must own it. Do NOT write to the vault — the linter is read-only. Do not modify this plugin repo. Report the linter's output verbatim."
 
-  local agent_out agent_status
-  set +e
-  agent_out="$(claude --plugin-dir "$root" --permission-mode acceptEdits -p "$prompt")"
-  agent_status=$?
-  set -e
+  local agent_out agent_status=0
+  if ! agent_out="$(claude --plugin-dir "$root" --permission-mode acceptEdits -p "$prompt")"; then
+    agent_status=$?
+  fi
 
   printf '%s\n' "$agent_out"
 
-  # Read-only invariant check — non-equal pre vs post = the agent wrote.
-  # Distinct exit code (2) so callers can distinguish from findings (1).
+  # Exit-code priority: invariant violation (2) > agent failure (passthrough)
+  # > text-mode findings (1) > clean (0). Invariant fires first because a
+  # write is the load-bearing contract failure regardless of agent exit.
   if [[ -d "$vault/.git" ]]; then
     status_after="$(git -C "$vault" status --porcelain 2>/dev/null || true)"
     if [[ "$status_before" != "$status_after" ]]; then
@@ -541,9 +539,7 @@ Do NOT attempt the audit yourself; the linter subagent must own it. Do NOT write
     fi
   fi
 
-  if [[ "$agent_status" -ne 0 ]]; then
-    return "$agent_status"
-  fi
+  [[ "$agent_status" -eq 0 ]] || return "$agent_status"
 
   # Exit 0 for JSON (the JSON IS the output; downstream parses it).
   # Exit 1 for text mode if any line starts with `[<TYPE>]` (a finding line).

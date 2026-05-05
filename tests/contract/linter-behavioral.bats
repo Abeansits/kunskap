@@ -23,23 +23,12 @@ setup_file() {
 
 setup() {
   [[ -z "${BATS_BEHAVIORAL_SKIP:-}" ]] || skip "$BATS_BEHAVIORAL_SKIP"
-  TMPVAULT="$(seed_lint_vault)"
+  TMPVAULT="$(make_empty_init_vault)"
   export TMPVAULT
 }
 
 teardown() {
   cleanup_temp_dirs TMPVAULT
-}
-
-# Seed an init'd vault with no curator-output yet (empty wiki/learnings/, empty
-# Archives/, fresh _drafts/). Each test then layers ONE scenario on top.
-seed_lint_vault() {
-  local v
-  v="$(mktemp -d -t kunskap-lint.XXXXXX)"
-  rm -rf "$v"
-  KUNSKAP_AUTO_CONFIRM=1 "$KUNSKAP_BIN" init "$v" --name "Lint Test" >/dev/null
-  ( cd "$v" && git add . && git -c user.email=test@local -c user.name=test commit -q -m "seed" ) >/dev/null
-  printf '%s\n' "$v"
 }
 
 run_linter() {
@@ -50,7 +39,7 @@ run_linter() {
 
 @test "MUST 3 — draft created 8d ago emits [DRAFT-STALE]" {
   local stale_date
-  stale_date="$(date -u -v-8d +%Y-%m-%d 2>/dev/null || date -u -d '8 days ago' +%Y-%m-%d)"
+  stale_date="$(date_ago -8d +%Y-%m-%d)"
   cat > "$TMPVAULT/wiki/_drafts/aging-topic--$stale_date.md" <<EOF
 ---
 type: draft
@@ -75,7 +64,7 @@ EOF
 
 @test "MUST 3 — draft deferred 15d ago emits [DRAFT-DEFERRED-STALE]" {
   local deferred_iso
-  deferred_iso="$(date -u -v-15d +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d '15 days ago' +%Y-%m-%dT%H:%M:%SZ)"
+  deferred_iso="$(date_ago -15d +%Y-%m-%dT%H:%M:%SZ)"
   cat > "$TMPVAULT/wiki/_drafts/long-deferred--2026-04-15.md" <<EOF
 ---
 type: draft
@@ -103,8 +92,8 @@ EOF
 
 @test "MUST 4 — inbox author not seen in last-run + 50h-old emits [OFFLINE-ARRIVAL]" {
   local note_iso ran_iso
-  note_iso="$(date -u -v-72h +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d '72 hours ago' +%Y-%m-%dT%H:%M:%SZ)"
-  ran_iso="$(date -u -v-50h +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d '50 hours ago' +%Y-%m-%dT%H:%M:%SZ)"
+  note_iso="$(date_ago -72h +%Y-%m-%dT%H:%M:%SZ)"
+  ran_iso="$(date_ago -50h +%Y-%m-%dT%H:%M:%SZ)"
   mkdir -p "$TMPVAULT/_meta"
   cat > "$TMPVAULT/_meta/last-run.json" <<EOF
 { "curator": { "ran_at": "$ran_iso", "by": "sebastian@laptop", "inbox_processed": 0, "articles_written": 0, "drafts_routed": 0 } }
@@ -131,7 +120,7 @@ EOF
 
 @test "MUST 5 — curator ran 60h ago emits [CURATOR-IDLE]" {
   local stale_run
-  stale_run="$(date -u -v-60h +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d '60 hours ago' +%Y-%m-%dT%H:%M:%SZ)"
+  stale_run="$(date_ago -60h +%Y-%m-%dT%H:%M:%SZ)"
   mkdir -p "$TMPVAULT/_meta"
   cat > "$TMPVAULT/_meta/last-run.json" <<EOF
 { "curator": { "ran_at": "$stale_run", "by": "sebastian@laptop" } }
@@ -225,7 +214,7 @@ EOF
 @test "lint --format json emits a parseable JSON object with findings array" {
   # Stack a couple of scenarios so we expect at least one finding.
   local stale_run
-  stale_run="$(date -u -v-60h +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d '60 hours ago' +%Y-%m-%dT%H:%M:%SZ)"
+  stale_run="$(date_ago -60h +%Y-%m-%dT%H:%M:%SZ)"
   mkdir -p "$TMPVAULT/_meta"
   cat > "$TMPVAULT/_meta/last-run.json" <<EOF
 { "curator": { "ran_at": "$stale_run", "by": "sebastian@laptop" } }

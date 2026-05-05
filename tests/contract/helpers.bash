@@ -88,6 +88,41 @@ EOF
   printf '%s\n' "$v"
 }
 
+# Init a fresh kunskap vault, commit the seed, echo its path. Distinct from
+# `make_vault_with_drafts` — leaves wiki/_drafts/ empty so the caller can
+# layer exactly one scenario on top (used by linter-behavioral.bats and
+# whatever P5+ behavioral suite needs an empty post-init vault).
+make_empty_init_vault() {
+  local v
+  v="$(mktemp -d -t kunskap-empty.XXXXXX)"
+  rm -rf "$v"
+  KUNSKAP_AUTO_CONFIRM=1 "$KUNSKAP_BIN" init "$v" --name "Empty Test" >/dev/null
+  ( cd "$v" && git add . && git -c user.email=test@local -c user.name=test commit -q -m "seed" ) >/dev/null
+  printf '%s\n' "$v"
+}
+
+# Format a date offset into the past, bridging BSD (`-v`) and GNU (`-d`)
+# `date` flag differences. Usage: `date_ago -8d "+%Y-%m-%d"`,
+# `date_ago -50h "+%Y-%m-%dT%H:%M:%SZ"`. Supports `d` (days) and `h` (hours)
+# — the only units the linter test suite uses.
+#
+# BSD's -v flag uses an UPPERCASE `H` for hours (lowercase `h` errors out);
+# GNU's -d takes "N hours ago" / "N days ago" prose. Translate accordingly.
+date_ago() {
+  local offset="$1" fmt="$2"
+  local n="${offset#-}"
+  local unit_char="${n: -1}"
+  local n_num="${n%?}"
+  local bsd_unit gnu_unit
+  case "$unit_char" in
+    d) bsd_unit=d; gnu_unit=day  ;;
+    h) bsd_unit=H; gnu_unit=hour ;;
+    *) echo "date_ago: unsupported unit '$unit_char' in '$offset' (use d or h)" >&2; return 1 ;;
+  esac
+  if date -u -v"-${n_num}${bsd_unit}" "$fmt" 2>/dev/null; then return; fi
+  date -u -d "$n_num $gnu_unit ago" "$fmt"
+}
+
 # Bats teardown helper — `[[ -d X ]] && rm -rf X` short-circuits to non-zero
 # when the dir doesn't exist, which bats reports as a teardown failure. Use
 # this instead. Pass any number of var names whose values are dirs to remove.
