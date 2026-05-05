@@ -32,6 +32,7 @@ validate_vault() {
   [[ -d "$vault" ]] || die "vault path not found: $vault"
   [[ -f "$vault/_meta/kunskap.toml" ]] || die "not a kunskap vault (missing _meta/kunskap.toml): $vault"
   [[ -d "$vault/raw/inbox" ]] || die "not a kunskap vault (missing raw/inbox/): $vault"
+  [[ -d "$vault/wiki" ]] || die "not a kunskap vault (missing wiki/): $vault"
 }
 
 cmd_help() {
@@ -1565,6 +1566,10 @@ cmd_drafts() {
 # for a shared `read_frontmatter_fields <file> <scalars> <lists>` helper.
 read_recall_frontmatter() {
   local file="$1"
+  # Strip both single- and double-quote wrappers — YAML accepts either form
+  # for scalars and tag-list items, and the original parser only handled
+  # double quotes (Codex Pass 1 SHOULD-FIX: `author: '\''alice'\''` missed
+  # `--author alice` filters).
   awk '
     BEGIN { fm = 0; saw_fm = 0; in_tags = 0; author = ""; tags = "" }
     NR == 1 && /^---$/ { saw_fm = 1; fm = 1; next }
@@ -1575,7 +1580,7 @@ read_recall_frontmatter() {
         v = $0
         sub(/^[[:space:]]+-[[:space:]]+/, "", v)
         sub(/[[:space:]]*$/, "", v)
-        sub(/^"/, "", v); sub(/"$/, "", v)
+        sub(/^["\047]/, "", v); sub(/["\047]$/, "", v)
         if (v != "") tags = (tags == "" ? v : tags "," v)
         next
       }
@@ -1583,7 +1588,8 @@ read_recall_frontmatter() {
 
       if (/^author:/) {
         v = $0; sub(/^author:[[:space:]]*/, "", v)
-        sub(/[[:space:]]*$/, "", v); sub(/^"/, "", v); sub(/"$/, "", v)
+        sub(/[[:space:]]*$/, "", v)
+        sub(/^["\047]/, "", v); sub(/["\047]$/, "", v)
         author = v; next
       }
       if (/^tags:/) {
@@ -1591,7 +1597,7 @@ read_recall_frontmatter() {
         sub(/[[:space:]]*$/, "", v)
         if (v ~ /^\[/) {
           sub(/^\[/, "", v); sub(/\][[:space:]]*$/, "", v)
-          gsub(/"/, "", v)
+          gsub(/["\047]/, "", v)
           n = split(v, items, /,[[:space:]]*/)
           for (i = 1; i <= n; i++) {
             gsub(/^[[:space:]]+|[[:space:]]+$/, "", items[i])
@@ -1662,7 +1668,8 @@ cmd_recall() {
   [[ -n "$query" ]] || die "recall: missing <query> (usage: kunskap recall <query> [--author X] [--tag Y] [--limit N] [--format text|json])"
   [[ ${#extra[@]} -eq 0 ]] || die "recall: unknown extra args: ${extra[*]}"
   [[ "$format" == "text" || "$format" == "json" ]] || die "recall: --format must be text or json (got: $format)"
-  [[ "$limit" =~ ^[0-9]+$ ]] || die "recall: --limit must be a non-negative integer (got: $limit)"
+  [[ "$limit" =~ ^[0-9]+$ && "$limit" -gt 0 ]] \
+    || die "recall: --limit must be a positive integer (got: $limit)"
 
   local vault
   vault="$(resolve_vault_flag_or_marker recall "$vault_flag")"
@@ -1676,13 +1683,23 @@ cmd_recall() {
     || die "recall: \`jq\` not on PATH; install jq first"
 
   # --fixed-strings keeps queries literal (so `kunskap recall "two-pass"`
-  # isn't parsed as a regex). rg exits 1 on no matches and trips `set -e`
-  # inside `$(...)` on bash 3.2 — pin the pipeline to status 0 with
-  # `|| true` so the empty-result message can still print.
+  # isn't parsed as a regex). rg's exit codes: 0 = matches found, 1 = no
+  # matches, 2+ = real failure (path unreadable, glob error, etc). Tolerate
+  # 1, surface 2+ — the silent `|| true` form would mask permission errors
+  # as "no hits" and erode user trust in Stage 1 (Codex Pass 1 BLOCK-SHIP).
+  local rg_raw rg_status=0
+  if rg_raw="$(rg --json --type md --fixed-strings --no-messages -- "$query" \
+                  "$vault/wiki" "$vault/raw/inbox" 2>/dev/null)"; then
+    rg_status=0
+  else
+    rg_status=$?
+  fi
+  [[ "$rg_status" -le 1 ]] \
+    || die "recall: rg failed with status $rg_status (check vault paths and read permissions on $vault/wiki and $vault/raw/inbox)"
+
   local rg_hits
   rg_hits="$(
-    { rg --json --type md --fixed-strings --no-messages -- "$query" \
-        "$vault/wiki" "$vault/raw/inbox" 2>/dev/null || true; } \
+    printf '%s\n' "$rg_raw" \
       | jq -c --arg prefix "$vault/" '
           select(.type == "match")
           | {

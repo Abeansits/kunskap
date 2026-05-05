@@ -43,6 +43,16 @@ teardown() {
   [[ "$output" == *"_meta/kunskap.toml"* ]]
 }
 
+@test "recall --vault dies if wiki/ missing (Stage 1 needs it)" {
+  empty="$(mktemp -d)"
+  mkdir -p "$empty/_meta" "$empty/raw/inbox"
+  echo "[vault]" > "$empty/_meta/kunskap.toml"
+  run "$KUNSKAP_BIN" recall foo --vault "$empty"
+  rm -rf "$empty"
+  [[ "$status" -ne 0 ]]
+  [[ "$output" == *"missing wiki/"* ]]
+}
+
 @test "recall --format only accepts text|json" {
   TMPVAULT="$(make_temp_vault)"
   run "$KUNSKAP_BIN" recall foo --vault "$TMPVAULT" --format yaml
@@ -50,11 +60,18 @@ teardown() {
   [[ "$output" == *"--format must be text or json"* ]]
 }
 
-@test "recall --limit must be a non-negative integer" {
+@test "recall --limit must be a positive integer" {
   TMPVAULT="$(make_temp_vault)"
   run "$KUNSKAP_BIN" recall foo --vault "$TMPVAULT" --limit abc
   [[ "$status" -ne 0 ]]
-  [[ "$output" == *"--limit must be a non-negative integer"* ]]
+  [[ "$output" == *"--limit must be a positive integer"* ]]
+}
+
+@test "recall --limit 0 is rejected (avoids 'matches found but exit 1' confusion)" {
+  TMPVAULT="$(make_temp_vault)"
+  run "$KUNSKAP_BIN" recall foo --vault "$TMPVAULT" --limit 0
+  [[ "$status" -ne 0 ]]
+  [[ "$output" == *"--limit must be a positive integer"* ]]
 }
 
 @test "recall rejects unknown flags" {
@@ -112,6 +129,27 @@ teardown() {
   # Every returned hit must have author = fixture@bats (not the agent author).
   all_match="$(echo "$output" | jq '[.hits[] | .author == "fixture@bats"] | all')"
   [[ "$all_match" == "true" ]]
+}
+
+@test "recall handles single-quoted frontmatter author + tags" {
+  TMPVAULT="$(make_temp_vault)"
+  cat > "$TMPVAULT/wiki/learnings/_quote-fixture.md" <<'EOF'
+---
+type: learning
+author: 'alice'
+tags: ['bash', 'gotcha']
+---
+single-quoted-fm-needle
+EOF
+  ( cd "$TMPVAULT" && git add . && git -c user.email=t@l -c user.name=t commit -q -m quotes )
+  run "$KUNSKAP_BIN" recall "single-quoted-fm-needle" --vault "$TMPVAULT" --author alice --format json
+  [[ "$status" -eq 0 ]]
+  count="$(echo "$output" | jq '.hits | length')"
+  [[ "$count" -ge 1 ]]
+  run "$KUNSKAP_BIN" recall "single-quoted-fm-needle" --vault "$TMPVAULT" --tag bash --format json
+  [[ "$status" -eq 0 ]]
+  count="$(echo "$output" | jq '.hits | length')"
+  [[ "$count" -ge 1 ]]
 }
 
 @test "recall --tag filters by frontmatter tags membership" {
@@ -200,12 +238,30 @@ teardown() {
   [[ "$vault_line" -lt "$rg_line" ]]
 }
 
-@test "recall query containing dash is treated literally (--fixed-strings)" {
+@test "recall handles regex metachars literally (--fixed-strings)" {
   TMPVAULT="$(make_temp_vault)"
-  # If the query were regex-interpreted, `set -e` would match `set` then the
-  # `-e` flag would error or the pattern would fail. Verifying we get the
-  # bash-discipline article (which contains `set -e`) proves literal handling.
-  run "$KUNSKAP_BIN" recall "set -e" --vault "$TMPVAULT"
+  # Seed a file containing a regex-invalid string. Without --fixed-strings,
+  # `a[b` is an unclosed character class that rg rejects with status 2 →
+  # the rg-status-1-tolerance guard would die. With --fixed-strings, the
+  # literal is found. This test fails for the right reason if the flag
+  # regresses (Codex Pass 1 SHOULD-FIX: weak prior assertion).
+  cat > "$TMPVAULT/wiki/learnings/_metachar-fixture.md" <<'EOF'
+---
+type: learning
+---
+contains a[b literal
+EOF
+  ( cd "$TMPVAULT" && git add . && git -c user.email=t@l -c user.name=t commit -q -m metachar )
+  run "$KUNSKAP_BIN" recall "a[b" --vault "$TMPVAULT"
   [[ "$status" -eq 0 ]]
-  [[ "$output" == *"bash-discipline.md"* ]]
+  [[ "$output" == *"_metachar-fixture.md"* ]]
+}
+
+@test "recall surfaces rg failures (>1) instead of swallowing them as no-hits" {
+  TMPVAULT="$(make_temp_vault)"
+  chmod 000 "$TMPVAULT/wiki"
+  run "$KUNSKAP_BIN" recall "anything" --vault "$TMPVAULT"
+  chmod 755 "$TMPVAULT/wiki"
+  [[ "$status" -ne 0 ]]
+  [[ "$output" == *"rg failed"* ]]
 }
