@@ -1566,11 +1566,20 @@ cmd_drafts() {
 # for a shared `read_frontmatter_fields <file> <scalars> <lists>` helper.
 read_recall_frontmatter() {
   local file="$1"
-  # Strip both single- and double-quote wrappers — YAML accepts either form
-  # for scalars and tag-list items, and the original parser only handled
-  # double quotes (Codex Pass 1 SHOULD-FIX: `author: '\''alice'\''` missed
-  # `--author alice` filters).
+  # YAML accepts both `"..."` and `'...'` for scalars and tag-list items.
+  # Strip ONLY matching outer quotes — naive `gsub` of all quotes destroys
+  # legitimate apostrophes in values like `O'Reilly` (Codex Pass 2
+  # SHOULD-FIX). `\047` is awk's octal escape for `'`.
   awk '
+    function strip_outer_quotes(s,    out) {
+      out = s
+      if (out ~ /^".*"$/)        { sub(/^"/, "", out); sub(/"$/, "", out) }
+      else if (out ~ /^\047.*\047$/) {
+        sub(/^\047/, "", out); sub(/\047$/, "", out)
+        gsub(/\047\047/, "\047", out)   # YAML escape: doubled quote -> one
+      }
+      return out
+    }
     BEGIN { fm = 0; saw_fm = 0; in_tags = 0; author = ""; tags = "" }
     NR == 1 && /^---$/ { saw_fm = 1; fm = 1; next }
     !saw_fm { exit }
@@ -1580,7 +1589,7 @@ read_recall_frontmatter() {
         v = $0
         sub(/^[[:space:]]+-[[:space:]]+/, "", v)
         sub(/[[:space:]]*$/, "", v)
-        sub(/^["\047]/, "", v); sub(/["\047]$/, "", v)
+        v = strip_outer_quotes(v)
         if (v != "") tags = (tags == "" ? v : tags "," v)
         next
       }
@@ -1589,18 +1598,17 @@ read_recall_frontmatter() {
       if (/^author:/) {
         v = $0; sub(/^author:[[:space:]]*/, "", v)
         sub(/[[:space:]]*$/, "", v)
-        sub(/^["\047]/, "", v); sub(/["\047]$/, "", v)
-        author = v; next
+        author = strip_outer_quotes(v); next
       }
       if (/^tags:/) {
         v = $0; sub(/^tags:[[:space:]]*/, "", v)
         sub(/[[:space:]]*$/, "", v)
         if (v ~ /^\[/) {
           sub(/^\[/, "", v); sub(/\][[:space:]]*$/, "", v)
-          gsub(/["\047]/, "", v)
           n = split(v, items, /,[[:space:]]*/)
           for (i = 1; i <= n; i++) {
             gsub(/^[[:space:]]+|[[:space:]]+$/, "", items[i])
+            items[i] = strip_outer_quotes(items[i])
             if (items[i] != "") tags = (tags == "" ? items[i] : tags "," items[i])
           }
         } else {
@@ -1626,12 +1634,14 @@ detect_obsidian_bin() {
     return 1
   fi
   pgrep -x Obsidian >/dev/null 2>&1 || return 1
-  # `obsidian-cli version` exits 0 even when the CLI is disabled in Settings
-  # — it just prints "Command line interface is not enabled" and returns 0.
-  # Inspect the output to distinguish enabled from disabled.
-  local probe
-  probe="$( "$bin" version 2>&1 )" || return 1
-  [[ "$probe" != *"not enabled"* ]] || return 1
+  # Smoke via a real `search` probe — it exercises the actual Stage-2 code
+  # path. CLI-disabled prints free text ("Command line interface is not
+  # enabled..."), enabled prints JSON. Matching JSON validity instead of a
+  # specific error string is resilient to Obsidian wording drift (Codex
+  # Pass 2 SHOULD-FIX). Probe query is unlikely to match real content.
+  ( "$bin" search query="__kunskap_probe__" format=json limit=1 2>/dev/null ) \
+    | jq -e 'type' >/dev/null 2>&1 \
+    || return 1
   printf '%s\n' "$bin"
 }
 
@@ -1648,8 +1658,8 @@ run_obsidian_recall() {
 }
 
 cmd_recall() {
-  local vault_flag="$GLOBAL_VAULT" query="" author="" tag="" limit=20 format="text"
-  local extra=()
+  local vault_flag="$GLOBAL_VAULT" author="" tag="" limit=20 format="text"
+  local query_tokens=()
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --vault)  require_value --vault  "${2-__MISSING__}"; vault_flag="$2"; shift 2 ;;
@@ -1657,16 +1667,17 @@ cmd_recall() {
       --tag)    require_value --tag    "${2-__MISSING__}"; tag="$2";        shift 2 ;;
       --limit)  require_value --limit  "${2-__MISSING__}"; limit="$2";      shift 2 ;;
       --format) require_value --format "${2-__MISSING__}"; format="$2";     shift 2 ;;
-      --) shift; while [[ $# -gt 0 ]]; do extra+=("$1"); shift; done ;;
+      --) shift; while [[ $# -gt 0 ]]; do query_tokens+=("$1"); shift; done ;;
       -*) die "recall: unknown flag: $1" ;;
-      *)
-        if [[ -z "$query" ]]; then query="$1"
-        else extra+=("$1"); fi
-        shift ;;
+      *)  query_tokens+=("$1"); shift ;;
     esac
   done
-  [[ -n "$query" ]] || die "recall: missing <query> (usage: kunskap recall <query> [--author X] [--tag Y] [--limit N] [--format text|json])"
-  [[ ${#extra[@]} -eq 0 ]] || die "recall: unknown extra args: ${extra[*]}"
+  # Multi-word queries: `kunskap recall machine learning` joins to "machine
+  # learning" — researchers naturally type unquoted phrases (Codex Pass 2
+  # SHOULD-FIX). Single-token queries pass through unchanged.
+  [[ ${#query_tokens[@]} -gt 0 ]] \
+    || die "recall: missing <query> (usage: kunskap recall <query> [--author X] [--tag Y] [--limit N] [--format text|json])"
+  local query="${query_tokens[*]}"
   [[ "$format" == "text" || "$format" == "json" ]] || die "recall: --format must be text or json (got: $format)"
   [[ "$limit" =~ ^[0-9]+$ && "$limit" -gt 0 ]] \
     || die "recall: --limit must be a positive integer (got: $limit)"
@@ -1746,7 +1757,13 @@ cmd_recall() {
         idx=0
         while IFS= read -r p; do
           [[ -z "$p" ]] && continue
+          # Normalize Obsidian path to vault-relative POSIX (Codex Pass 2):
+          # strip absolute vault prefix, leading "./", convert backslashes.
+          # Without this, the join with rg paths in $omap silently drops
+          # under platform path-shape mismatch.
+          [[ "$p" == "$vault/"* ]] && p="${p#"$vault/"}"
           [[ "$p" == ./* ]] && p="${p#./}"
+          p="${p//\\//}"
           jq -nc --arg path "$p" --argjson rank "$idx" '{path: $path, obs_rank: $rank}'
           idx=$((idx + 1))
         done <<< "$obs_paths"

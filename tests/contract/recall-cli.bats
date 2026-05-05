@@ -152,6 +152,41 @@ EOF
   [[ "$count" -ge 1 ]]
 }
 
+@test "recall preserves apostrophes inside quoted frontmatter values" {
+  TMPVAULT="$(make_temp_vault)"
+  cat > "$TMPVAULT/wiki/learnings/_apostrophe-fixture.md" <<'EOF'
+---
+type: learning
+tags: ["O'Reilly", "beta"]
+---
+apostrophe-needle
+EOF
+  ( cd "$TMPVAULT" && git add . && git -c user.email=t@l -c user.name=t commit -q -m apos )
+  # Naive `gsub(/["\047]/, "")` would parse the tag as "OReilly" and miss
+  # `--tag O'Reilly` (Codex Pass 2 SHOULD-FIX: matching-pair stripping).
+  run "$KUNSKAP_BIN" recall "apostrophe-needle" --vault "$TMPVAULT" --tag "O'Reilly" --format json
+  [[ "$status" -eq 0 ]]
+  count="$(echo "$output" | jq '.hits | length')"
+  [[ "$count" -ge 1 ]]
+}
+
+@test "recall accepts unquoted multi-word query (joins positional tokens)" {
+  TMPVAULT="$(make_temp_vault)"
+  cat > "$TMPVAULT/wiki/learnings/_phrase-fixture.md" <<'EOF'
+---
+type: learning
+---
+machine learning notes go here
+EOF
+  ( cd "$TMPVAULT" && git add . && git -c user.email=t@l -c user.name=t commit -q -m phrase )
+  # `kunskap recall machine learning --vault X` (no quotes around the
+  # phrase) should join positional tokens into "machine learning"
+  # (Codex Pass 2 SHOULD-FIX: ergonomics for unquoted phrases).
+  run "$KUNSKAP_BIN" recall machine learning --vault "$TMPVAULT"
+  [[ "$status" -eq 0 ]]
+  [[ "$output" == *"_phrase-fixture.md"* ]]
+}
+
 @test "recall --tag filters by frontmatter tags membership" {
   TMPVAULT="$(make_temp_vault)"
   run "$KUNSKAP_BIN" recall "set -e" --vault "$TMPVAULT" --tag bash --format json
