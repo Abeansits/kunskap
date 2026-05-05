@@ -114,7 +114,7 @@ run_curator() {
   ( cd "$TMPVAULT" && git reset -q --hard HEAD~$(($(git log --oneline | wc -l) - 1)) )
   run_curator
   diff -ruN --strip-trailing-cr \
-    -I '^last_curated:' -I '^created:' \
+    -I '^last_curated:' -I '^created:' -I '^last_regenerated:' \
     "$snap1/wiki1" "$TMPVAULT/wiki" >/dev/null
   rm -rf "$snap1"
 }

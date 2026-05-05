@@ -72,6 +72,27 @@ teardown_file() {
   [[ "$output" == *"unknown extra args"* ]]
 }
 
+@test "curate via symlink shim still resolves the plugin root" {
+  # Block-ship Pass-2 fix: plugin_root() must follow symlinks.
+  shim_dir="$(mktemp -d)"
+  ln -s "$KUNSKAP_BIN" "$shim_dir/kunskap"
+  run "$shim_dir/kunskap" curate --vault "$TMPVAULT" --check
+  rm -rf "$shim_dir"
+  [[ "$status" -eq 0 ]]
+  [[ "$output" == *"healthy"* ]]
+}
+
+@test "curate dies with a clear error when the agent file is missing" {
+  fake_root="$(mktemp -d)"
+  mkdir -p "$fake_root/bin"
+  cp "$KUNSKAP_BIN" "$fake_root/bin/kunskap"
+  PATH="/usr/bin:/bin" CLAUDE_PLUGIN_ROOT="$fake_root" \
+    run "$fake_root/bin/kunskap" curate --vault "$TMPVAULT"
+  rm -rf "$fake_root"
+  [[ "$status" -ne 0 ]]
+  [[ "$output" == *"curator agent not found"* ]]
+}
+
 # ---------- link-stubs ----------
 
 @test "link-stubs --vault required" {

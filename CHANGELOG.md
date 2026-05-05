@@ -7,9 +7,9 @@
 - `bin/kunskap` adds `curate` (headless agent spawn via `claude --plugin-dir`), `link-stubs` (resolved / alias / needs-stub / orphan classification), and `audit-coverage` (silent-drops + broken-provenance) subcommands.
 - Fixture-based contract test suite at `tests/contract/`:
   - `static-prompt.bats` (29 tests) — asserts each §Curator contract MUST/MUST-NOT clause is encoded in the agent prompt; catches prompt drift in CI.
-  - `cli-surface.bats` (20 tests) — exercises the new CLI subcommands against a hand-crafted fixture vault at `tests/fixtures/curator-vault/`.
+  - `cli-surface.bats` (24 tests) — exercises the new CLI subcommands against a hand-crafted fixture vault at `tests/fixtures/curator-vault/`.
   - `behavioral.bats` — gated on `KUNSKAP_LIVE_TESTS=1`; runs the actual curator and asserts end-to-end outcomes.
-- CI: `.github/workflows/p1.yml` runs the contract suite alongside P0's `validate.yml`.
+- CI: `.github/workflows/p1.yml` runs the contract suite alongside P0's `p0.yml`.
 
 Risks #3 (hand-edit overwrite) and #9 (curator contract testability) are now load-bearing-tested. `bin/kunskap version` bumps to `0.1.0`.
 

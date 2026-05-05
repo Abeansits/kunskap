@@ -12,9 +12,16 @@ plugin_root() {
     printf '%s\n' "$CLAUDE_PLUGIN_ROOT"
     return
   fi
-  local self
-  self="$(cd "$(dirname "$0")/.." && pwd)"
-  printf '%s\n' "$self"
+  # Resolve symlinks so a ~/bin/kunskap → /opt/kunskap/bin/kunskap shim
+  # still finds the plugin's agents/ at /opt/kunskap. macOS BSD readlink
+  # has no -f, so walk the chain by hand.
+  local src="$0" dir
+  while [[ -h "$src" ]]; do
+    dir="$(cd -P "$(dirname "$src")" && pwd)"
+    src="$(readlink "$src")"
+    [[ "$src" != /* ]] && src="$dir/$src"
+  done
+  (cd -P "$(dirname "$src")/.." && pwd)
 }
 
 validate_vault() {
@@ -186,6 +193,8 @@ cmd_curate() {
 
   local root prompt
   root="$(plugin_root)"
+  [[ -f "$root/agents/curator.md" ]] \
+    || die "curate: curator agent not found at $root/agents/curator.md (plugin_root resolved to $root; set CLAUDE_PLUGIN_ROOT to override)"
   prompt="You have one task: invoke the \`curator\` subagent (defined in this plugin's agents/curator.md) via the Agent tool, passing this exact string as its ARGUMENTS:
 
 $vault
