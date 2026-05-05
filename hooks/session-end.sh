@@ -28,6 +28,11 @@ vault="$(kunskap_resolve_vault)" || {
 
 kunskap_is_shared "$vault" || exit 0
 
+if kunskap_rebase_in_progress "$vault"; then
+  echo "Kunskap: vault $vault has a rebase in progress; skipping commit + push. Resolve with \`git -C $vault rebase --continue\` or \`--abort\` before the next session." >&2
+  exit 0
+fi
+
 session_id="unknown"
 if [[ ! -t 0 ]]; then
   hook_input="$(cat 2>/dev/null || true)"

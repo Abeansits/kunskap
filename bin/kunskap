@@ -262,7 +262,14 @@ cmd_learn_enable() {
   proj="$(project_dir)"
 
   if ! $yes && [[ "${KUNSKAP_AUTO_CONFIRM:-}" != "1" ]]; then
-    printf 'Enable Kunskap in %s pointed at %s? (y/N) ' "$proj" "$vault" >&2
+    # Risk #7 (vault-leak): labeled lines reduce path-noise misreads. Wrong
+    # vault here = personal notes pushed to team vault (or vice versa).
+    {
+      printf 'Enable Kunskap with the following binding?\n'
+      printf '  PROJECT: %s\n' "$proj"
+      printf '  VAULT:   %s\n' "$vault"
+      printf 'Proceed? (y/N) '
+    } >&2
     local reply=""
     read -r reply || true
     [[ "$reply" =~ ^[Yy]$ ]] || die "learn enable: cancelled (no marker written)"
@@ -335,14 +342,26 @@ cmd_learn_status() {
     echo "IDENTITY: not set — run \`kunskap config user --name <slug> --host <host>\`"
   fi
 
+  local shared=""
   if [[ -z "$vault" || ! -d "$vault" ]]; then
     echo "SHARED: unknown — vault path missing or unreadable"
   elif [[ ! -f "$vault/_meta/kunskap.toml" ]]; then
     echo "SHARED: unknown — vault not initialized (P3: \`kunskap init\`)"
   else
-    local shared
     shared="$(read_toml_field "$vault/_meta/kunskap.toml" vault shared 2>/dev/null || true)"
     echo "SHARED: ${shared:-unknown}"
+  fi
+
+  # Remote health is a top failure mode for shared vaults — surface it so
+  # users see "no origin remote" before their first session-end push fails.
+  if [[ "$shared" == "true" && -d "$vault/.git" ]]; then
+    local remote=""
+    remote="$(git -C "$vault" remote get-url origin 2>/dev/null || true)"
+    if [[ -n "$remote" ]]; then
+      echo "REMOTE: $remote"
+    else
+      echo "REMOTE: not configured (no \`origin\` remote — pushes will fail)"
+    fi
   fi
 
   # Risk #5 (identity fragility) cross-check: if identity-string appears as a

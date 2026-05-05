@@ -69,6 +69,17 @@ teardown() {
   [[ ! -f "$TMPPROJ/.claude/kunskap.json" ]]
 }
 
+@test "learn enable confirmation prompt prints labeled PROJECT + VAULT lines (Risk #7 ergonomics)" {
+  cd "$TMPPROJ"
+  vault="$(mktemp -d)"
+  run bash -c "echo 'n' | '$KUNSKAP_BIN' learn enable --vault '$vault'"
+  rm -rf "$vault"
+  [[ "$status" -ne 0 ]]
+  [[ "$output" == *"PROJECT:"* ]]
+  [[ "$output" == *"VAULT:"* ]]
+  [[ "$output" == *"$TMPPROJ"* ]]
+}
+
 @test "learn enable accepts KUNSKAP_AUTO_CONFIRM=1 (test scriptability)" {
   cd "$TMPPROJ"
   vault="$(mktemp -d)"
@@ -154,6 +165,42 @@ EOF
   run "$KUNSKAP_BIN" learn status
   [[ "$status" -eq 0 ]]
   [[ "$output" == *"SHARED: true"* ]]
+  rm -rf "$vault"
+}
+
+@test "learn status surfaces REMOTE: not configured for shared vault without origin" {
+  cd "$TMPPROJ"
+  vault="$(mktemp -d)"
+  mkdir -p "$vault/_meta"
+  cat > "$vault/_meta/kunskap.toml" <<EOF
+[vault]
+shared = true
+EOF
+  ( cd "$vault" && git init -q && git config user.email s@b && git config user.name s )
+  KUNSKAP_AUTO_CONFIRM=1 "$KUNSKAP_BIN" learn enable --vault "$vault"
+  run "$KUNSKAP_BIN" learn status
+  [[ "$status" -eq 0 ]]
+  [[ "$output" == *"REMOTE: not configured"* ]]
+  [[ "$output" == *"pushes will fail"* ]]
+  rm -rf "$vault"
+}
+
+@test "learn status surfaces REMOTE: <url> when origin is configured" {
+  cd "$TMPPROJ"
+  vault="$(mktemp -d)"
+  mkdir -p "$vault/_meta"
+  cat > "$vault/_meta/kunskap.toml" <<EOF
+[vault]
+shared = true
+EOF
+  ( cd "$vault" \
+    && git init -q \
+    && git config user.email s@b && git config user.name s \
+    && git remote add origin git@example.com:org/repo.git )
+  KUNSKAP_AUTO_CONFIRM=1 "$KUNSKAP_BIN" learn enable --vault "$vault"
+  run "$KUNSKAP_BIN" learn status
+  [[ "$status" -eq 0 ]]
+  [[ "$output" == *"REMOTE: git@example.com:org/repo.git"* ]]
   rm -rf "$vault"
 }
 

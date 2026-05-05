@@ -31,6 +31,11 @@ vault="$(kunskap_resolve_vault)" || {
 
 kunskap_is_shared "$vault" || exit 0
 
+if kunskap_rebase_in_progress "$vault"; then
+  echo "Kunskap: vault $vault has a rebase in progress; skipping pull. Resolve with \`git -C $vault rebase --continue\` or \`--abort\` before the next session." >&2
+  exit 0
+fi
+
 ( cd "$vault" && git pull --rebase --autostash --quiet ) \
   || echo "Kunskap: vault pull failed; continuing with local copy" >&2
 

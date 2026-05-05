@@ -102,6 +102,32 @@ EOF
   [[ -z "$output" ]]
 }
 
+@test "session-start: vault has rebase in progress → exit 0 + actionable stderr (no pull attempted)" {
+  vault="$(mktemp -d -t shared-vault.XXXXXX)"
+  make_shared_vault "$vault"
+  mkdir -p "$vault/.git/rebase-merge"   # Pass-2 block-ship: detect mid-rebase wedge
+  write_marker "$vault"
+  set_identity
+  run "$SESSION_START"
+  rm -rf "$vault"
+  [[ "$status" -eq 0 ]]
+  [[ "$output" == *"rebase in progress"* ]]
+  [[ "$output" == *"rebase --continue"* || "$output" == *"--abort"* ]]
+}
+
+@test "session-end: vault has rebase in progress → exit 0 + actionable stderr (no commit attempted)" {
+  vault="$(mktemp -d -t shared-vault.XXXXXX)"
+  make_shared_vault "$vault"
+  mkdir -p "$vault/.git/rebase-apply"
+  write_marker "$vault"
+  set_identity
+  echo "new note" > "$vault/raw/inbox/wedge-note.md"
+  run "$SESSION_END"
+  rm -rf "$vault"
+  [[ "$status" -eq 0 ]]
+  [[ "$output" == *"rebase in progress"* ]]
+}
+
 @test "session-start: shared vault but git pull fails (no remote) → exit 0 + stderr" {
   vault="$(mktemp -d -t shared-vault.XXXXXX)"
   make_shared_vault "$vault"   # no remote

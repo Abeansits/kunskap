@@ -48,3 +48,15 @@ kunskap_identity_set() {
   bin="$(kunskap_bin)" || return 1
   "$bin" whoami 2>/dev/null
 }
+
+# A previous `git pull --rebase --autostash` may have half-succeeded (network
+# drop, Ctrl-C, OS shutdown), leaving `.git/rebase-merge/` or
+# `.git/rebase-apply/`. Subsequent pulls would fail every session — sync stays
+# broken indefinitely. Hooks detect the wedge and refuse to act, leaving the
+# user a clear message rather than auto-aborting (which would silently
+# discard partially-resolved work).
+kunskap_rebase_in_progress() {
+  local vault="${1:-}"
+  [[ -n "$vault" ]] || return 1
+  [[ -d "$vault/.git/rebase-merge" || -d "$vault/.git/rebase-apply" ]]
+}
