@@ -152,6 +152,41 @@ teardown() {
   grep -q "promoted from drafts/topic-alpha" "$TMPVAULT/wiki/learnings/example-topic.md"
 }
 
+@test "drafts approve --into preserves body content past horizontal-rule ---" {
+  # Pass-1 block-ship: prior `sed -n '/^---$/,/^---$/!p'` negated EVERY
+  # `---...---` range, silently truncating draft bodies that contained
+  # markdown horizontal rules. Lock the fix.
+  TMPVAULT="$(make_vault_with_drafts)"
+  cat > "$TMPVAULT/wiki/_drafts/with-rule--2026-05-02.md" <<'EOF'
+---
+type: draft
+lane: 2
+confidence: high
+reason: extends with example
+source_count: 1
+sources:
+  - raw/inbox/01-foo.md
+created: 2026-05-02
+---
+
+Body line before the rule.
+
+---
+
+Body line AFTER the rule (must survive merge).
+
+## Recommendation
+
+Approve into example-topic.
+EOF
+  ( cd "$TMPVAULT" && git add . && git -c user.email=test@local -c user.name=test commit -q -m "seed rule draft" ) >/dev/null
+  run "$KUNSKAP_BIN" drafts approve with-rule --vault "$TMPVAULT" --into example-topic
+  [[ "$status" -eq 0 ]]
+  grep -q "Body line before the rule" "$TMPVAULT/wiki/learnings/example-topic.md"
+  grep -q "Body line AFTER the rule" "$TMPVAULT/wiki/learnings/example-topic.md"
+  grep -q "## Recommendation" "$TMPVAULT/wiki/learnings/example-topic.md"
+}
+
 @test "drafts approve --into errors when target doesn't exist" {
   TMPVAULT="$(make_vault_with_drafts)"
   run "$KUNSKAP_BIN" drafts approve 1 --vault "$TMPVAULT" --into no-such-article

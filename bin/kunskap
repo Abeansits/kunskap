@@ -1090,9 +1090,19 @@ cmd_drafts_approve() {
   if [[ -n "$into" ]]; then
     dest_article="$vault/wiki/learnings/${into}.md"
     [[ -f "$dest_article" ]] || die "drafts approve: --into target $dest_article does not exist; create it first or omit --into"
+    # Extract body (everything after the closing frontmatter ---). Counts
+    # `---` lines: the FIRST two delimit frontmatter; the third and beyond
+    # are body content (e.g. markdown horizontal rules) and must survive.
+    # Pass-1 finding: prior `sed -n '/^---$/,/^---$/!p'` negated EVERY
+    # `---...---` range, silently truncating draft bodies that contained
+    # horizontal rules.
     {
       printf '\n### %s — promoted from drafts/%s\n\n' "$today" "$slug"
-      sed -n '/^---$/,/^---$/!p' "$src"
+      awk '
+        BEGIN { fm = 0 }
+        /^---$/ { fm++; if (fm <= 2) next }
+        fm >= 2 { print }
+      ' "$src"
     } >> "$dest_article"
   else
     dest_article="$vault/wiki/learnings/${slug}.md"
