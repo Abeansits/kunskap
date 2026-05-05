@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="0.4.0"
+VERSION="0.5.0"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/kunskap"
 IDENTITY_FILE="$CONFIG_DIR/identity.toml"
 
@@ -49,8 +49,8 @@ Usage:
   kunskap learn enable --vault <abs-path> [--yes]
   kunskap learn disable
   kunskap learn status
-  kunskap curate --vault <abs-path> [--check]
-  kunskap lint   [--vault <abs-path>] [--format text|json]
+  kunskap curate --vault <abs-path> [--check] [--force] [--yes]
+  kunskap lint   [--vault <abs-path>] [--format text|json] [--force] [--yes]
   kunskap drafts list   [--vault <abs-path>] [--format text|json]
   kunskap drafts show   <id-or-slug> [--vault <abs-path>]
   kunskap drafts approve <id-or-slug> [--into <article-slug>] [--vault <abs-path>]
@@ -81,14 +81,26 @@ Notes:
   fail-soft: \`shared\` returns "false", other keys return empty.
 
   \`curate\` spawns the curator agent headlessly via \`claude --plugin-dir\`.
-  Requires Claude Code on PATH and Anthropic auth configured.
+  Requires Claude Code on PATH and Anthropic auth configured. The CLI
+  changes directory into the vault before spawning so the headless agent's
+  filesystem sandbox is scoped to the vault (P4 §2 sandbox-CWD bug fix).
 
-  \`lint\` spawns the linter agent the same way. Read-only: the agent never
-  writes to the vault, and the CLI verifies \`git status --porcelain\` is
-  clean post-run (fails non-zero if the read-only invariant was violated).
+  \`lint\` spawns the linter agent the same way. Read-only: the agent only
+  writes \`_meta/last-run/linter.json\` (the sole permitted exception,
+  recording the run; sharded per-role so curator + linter never race on
+  the same file); the CLI verifies all other paths are unchanged post-run.
   Exit codes: 0 = no findings, 1 = findings present (default mode);
   \`--format json\` always exits 0 and emits a structured findings array.
   Vault resolves from --vault, then the project marker (.claude/kunskap.json).
+
+  Both \`curate\` and \`lint\` enforce \`_meta/roles.toml\` (single-primary,
+  no fallback — design §Q4): the run refuses if your \`kunskap whoami\`
+  identity-string does not match \`roles.<role>.primary\`. \`--force\`
+  bypasses the check (interactive confirmation; pass --yes or set
+  KUNSKAP_AUTO_CONFIRM=1 to skip the prompt — recorded as forced=true in
+  _meta/last-run/<role>.json for audit). Missing roles.toml or primary="TBD"
+  warns and proceeds (solo / freshly-init'd vaults must work without
+  role config). \`git status --porcelain\` is checked authoritatively.
 
   \`drafts\` operates on <vault>/wiki/_drafts/. The vault is resolved from
   --vault, then from the project marker (.claude/kunskap.json), then errors.
@@ -129,6 +141,76 @@ read_toml_field() {
 
 read_identity_field() {
   read_toml_field "$IDENTITY_FILE" user "$1"
+}
+
+# Compute identity-string (`<name>@<host>`) from identity.toml. Echo on stdout;
+# return 1 if either field is missing. Used by role-check + last-run record.
+compute_identity_string() {
+  local name host
+  name="$(read_identity_field name)" || return 1
+  host="$(read_identity_field host)" || return 1
+  [[ -n "$name" && -n "$host" ]] || return 1
+  printf '%s@%s\n' "$name" "$host"
+}
+
+# Read `roles.<role>.primary` from <vault>/_meta/roles.toml. Echo on stdout
+# (empty if file missing or field unset / "TBD"). Treats "TBD" the same as
+# missing so the P3 template defaults don't gate runs.
+read_role_primary() {
+  local vault="$1" role="$2"
+  local file="$vault/_meta/roles.toml" val=""
+  [[ -f "$file" ]] || return 0
+  val="$(read_toml_field "$file" "roles.$role" primary || true)"
+  [[ "$val" == "TBD" ]] && val=""
+  printf '%s\n' "$val"
+}
+
+# Role check: refuse with actionable message unless caller's identity matches
+# the primary, or --force is supplied. Missing/TBD primary → warn and proceed.
+# Args: <vault> <role> <forced-true-or-false> <yes-true-or-false>
+# Returns: 0 to proceed, non-zero die() if the check fails.
+check_role() {
+  local vault="$1" role="$2" forced="$3" yes="$4"
+  local identity primary
+  if ! identity="$(compute_identity_string)"; then
+    die "$role: identity not set — run \`kunskap config user --name <slug> --host <host>\` first (P1 §5: self-state before external)"
+  fi
+  primary="$(read_role_primary "$vault" "$role" || true)"
+  if [[ -z "$primary" ]]; then
+    echo "kunskap: $role: no roles.$role.primary configured ($vault/_meta/roles.toml missing or TBD); running as $identity (warning, not refusal)" >&2
+    return 0
+  fi
+  if [[ "$primary" == "$identity" ]]; then
+    return 0
+  fi
+  if ! $forced; then
+    die "$role: $identity is not the primary ($role primary is $primary). Pass --force to override (recorded as forced=true in _meta/last-run/$role.json), or edit $vault/_meta/roles.toml to update primaries. \`kunskap whoami\` shows your identity-string."
+  fi
+  # Forced: confirm unless --yes (or KUNSKAP_AUTO_CONFIRM=1).
+  if ! $yes && [[ "${KUNSKAP_AUTO_CONFIRM:-}" != "1" ]]; then
+    {
+      printf 'Override role check?\n'
+      printf '  ROLE:     %s\n' "$role"
+      printf '  PRIMARY:  %s\n' "$primary"
+      printf '  CALLER:   %s\n' "$identity"
+      printf 'This will be recorded as forced=true in _meta/last-run/%s.json.\nProceed? (y/N) ' "$role"
+    } >&2
+    local reply=""
+    read -r reply || true
+    [[ "$reply" =~ ^[Yy]$ ]] || die "$role: cancelled (no run, no record)"
+  fi
+  echo "kunskap: $role: --force overrides role check ($identity != $primary); recording as forced=true." >&2
+  return 0
+}
+
+# Mid-rebase / merge / cherry-pick guard. Refuse if the vault is in a git
+# rewrite (P2 §3 mid-rebase wedge → P4 lint preflight → P5 curate preflight).
+mid_rebase_guard() {
+  local vault="$1" subcmd="$2"
+  if [[ -d "$vault/.git/rebase-merge" || -d "$vault/.git/rebase-apply" \
+     || -f "$vault/.git/MERGE_HEAD" || -f "$vault/.git/CHERRY_PICK_HEAD" ]]; then
+    die "$subcmd: vault $vault is mid-rebase/merge/cherry-pick; resolve with \`git -C $vault rebase --continue|--abort\` (or \`git merge --abort\`) before $subcmd"
+  fi
 }
 
 # --name is lowercase-only to pre-empt Paul/paul collisions in the P5
@@ -356,10 +438,8 @@ cmd_learn_status() {
   echo "STATUS: ${enabled:-unknown}"
   echo "VAULT:  ${vault:-<unset>}"
 
-  local identity name host
-  if name="$(read_identity_field name 2>/dev/null)" && [[ -n "$name" ]] \
-     && host="$(read_identity_field host 2>/dev/null)" && [[ -n "$host" ]]; then
-    identity="$name@$host"
+  local identity=""
+  if identity="$(compute_identity_string 2>/dev/null)"; then
     echo "IDENTITY: $identity"
   else
     identity=""
@@ -392,18 +472,14 @@ cmd_learn_status() {
   # role primary in any roles.toml section, status confirms; mismatch warns.
   local roles_file="$vault/_meta/roles.toml"
   if [[ -n "$identity" && -f "$roles_file" ]]; then
-    local matched=""
-    for role in curator linter; do
-      local primary
-      primary="$(read_toml_field "$roles_file" "roles.$role" primary 2>/dev/null || true)"
-      [[ "$primary" == "$identity" ]] && matched="$matched $role"
-    done
+    local cur lin matched=""
+    cur="$(read_toml_field "$roles_file" roles.curator primary 2>/dev/null || true)"
+    lin="$(read_toml_field "$roles_file" roles.linter  primary 2>/dev/null || true)"
+    [[ "$cur" == "$identity" ]] && matched="$matched curator"
+    [[ "$lin" == "$identity" ]] && matched="$matched linter"
     if [[ -n "$matched" ]]; then
       echo "ROLE-CHECK: primary for$matched"
     else
-      local cur lin
-      cur="$(read_toml_field "$roles_file" roles.curator primary 2>/dev/null || true)"
-      lin="$(read_toml_field "$roles_file" roles.linter  primary 2>/dev/null || true)"
       echo "ROLE-CHECK: not primary (curator: ${cur:-<unset>}; linter: ${lin:-<unset>})"
     fi
   elif [[ -n "$identity" ]]; then
@@ -442,11 +518,13 @@ cmd_learn() {
 }
 
 cmd_curate() {
-  local vault="" check=false extra=()
+  local vault="" check=false force=false yes=false extra=()
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --vault) require_value --vault "${2-__MISSING__}"; vault="$2"; shift 2 ;;
       --check) check=true; shift ;;
+      --force) force=true; shift ;;
+      --yes|-y) yes=true; shift ;;
       *) extra+=("$1"); shift ;;
     esac
   done
@@ -455,26 +533,58 @@ cmd_curate() {
   validate_vault "$vault"
   $check && { echo "kunskap: vault $vault looks healthy"; return 0; }
 
-  local root prompt
+  # Self-state checks before external (P1 §5). Plugin shape, then vault
+  # state (rebase, role), then claude-on-PATH.
+  local root
   root="$(plugin_root)"
   [[ -f "$root/agents/curator.md" ]] \
     || die "curate: curator agent not found at $root/agents/curator.md (plugin_root resolved to $root; set CLAUDE_PLUGIN_ROOT to override)"
+
+  mid_rebase_guard "$vault" curate
+  check_role "$vault" curator "$force" "$yes"
+
   command -v claude >/dev/null || die "curate: \`claude\` not on PATH; install Claude Code first"
+
+  local identity head_before forced_json prompt
+  identity="$(compute_identity_string)"
+  head_before="$(git -C "$vault" rev-parse HEAD 2>/dev/null || echo "")"
+  forced_json="false"
+  $force && forced_json="true"
+
   prompt="You have one task: invoke the \`curator\` subagent (defined in this plugin's agents/curator.md) via the Agent tool, passing this exact string as its ARGUMENTS:
 
 $vault
 
-The curator's system prompt already encodes the full §Curator contract — it knows what to do once it has the vault path. Do NOT attempt the curation work yourself; the curator subagent must own it. Do not write outside $vault. Do not modify this plugin repo. Report the curator's summary back when it returns."
+The curator's system prompt encodes the full §Curator contract — it knows what to do once it has the vault path. Do NOT attempt the curation work yourself; the curator subagent must own it. Do not write outside $vault. Do not modify this plugin repo.
 
-  exec claude --plugin-dir "$root" --permission-mode acceptEdits -p "$prompt"
+After the curator finishes its per-article commit loop, instruct it to write a final \`_meta/last-run/curator.json\` run record (sharded per-role — design §Q4 \"no shared file\" invariant; the linter owns _meta/last-run/linter.json and the curator must NOT touch it). Overwrite — no merge needed since this file is curator-only. The fields it MUST set:
+  ran_at: \"<iso-8601 UTC at end of run>\"
+  by: \"$identity\"
+  inbox_processed: <count of inbox files seen this run>
+  articles_written: <count of new+extend wiki articles>
+  drafts_routed: <count of drafts written to _drafts/>
+  head_before: \"$head_before\"
+  head_after: \"<git rev-parse HEAD after the last commit>\"
+  forced: $forced_json
+Use \`mkdir -p \"\$VAULT/_meta/last-run\"\` then \`jq -n ... > \$VAULT/_meta/last-run/curator.json\`. Final commit message: \`kunskap: curator run record\`.
+
+Report the curator's summary back when it returns."
+
+  # Pass --add-dir explicitly AND cd into the vault before spawning so the
+  # headless agent's filesystem sandbox covers the vault (P4 §2 finding —
+  # sandbox is CWD-scoped; --plugin-dir + \$ARGUMENTS aren't enough).
+  cd "$vault"
+  exec claude --add-dir "$vault" --plugin-dir "$root" --permission-mode acceptEdits -p "$prompt"
 }
 
 cmd_lint() {
-  local vault_flag="" format="text" extra=()
+  local vault_flag="" format="text" force=false yes=false extra=()
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --vault)  require_value --vault  "${2-__MISSING__}"; vault_flag="$2"; shift 2 ;;
       --format) require_value --format "${2-__MISSING__}"; format="$2";     shift 2 ;;
+      --force)  force=true; shift ;;
+      --yes|-y) yes=true;   shift ;;
       *) extra+=("$1"); shift ;;
     esac
   done
@@ -496,21 +606,22 @@ cmd_lint() {
   validate_vault "$vault"
 
   # Self-state checks before external (P1 §5). Plugin shape, then vault
-  # state, then claude-on-PATH. The rebase guard belongs in self-state
-  # because it's a precondition of the invariant check, not a runtime dep.
-  local root prompt
+  # state (rebase, role), then claude-on-PATH. The rebase guard belongs
+  # in self-state because it's a precondition of the invariant check, not
+  # a runtime dep.
+  local root
   root="$(plugin_root)"
   [[ -f "$root/agents/linter.md" ]] \
     || die "lint: linter agent not found at $root/agents/linter.md (plugin_root resolved to $root; set CLAUDE_PLUGIN_ROOT to override)"
 
-  # Mid-rebase / merge / cherry-pick guard (P2 §3 lesson): if the vault
-  # is in the middle of a git rewrite, the read-only invariant check
-  # would false-positive (porcelain shifts as rebase steps land). Refuse
-  # with an actionable message rather than emit confusing diff output.
-  if [[ -d "$vault/.git/rebase-merge" || -d "$vault/.git/rebase-apply" \
-     || -f "$vault/.git/MERGE_HEAD" || -f "$vault/.git/CHERRY_PICK_HEAD" ]]; then
-    die "lint: vault $vault is mid-rebase/merge/cherry-pick; resolve with \`git -C $vault rebase --continue|--abort\` (or \`git merge --abort\`) before linting"
-  fi
+  # Mid-rebase guard fires before role-check + claude-PATH so the user
+  # hears about vault wedge state on hosts without claude installed.
+  mid_rebase_guard "$vault" lint
+
+  # Role check (P5): linter primary or --force. Missing/TBD primary warns
+  # and proceeds (solo / freshly-init'd vault). Identity required either
+  # way; whoami unset → fail-closed before claude-PATH.
+  check_role "$vault" linter "$force" "$yes"
 
   command -v claude >/dev/null || die "lint: \`claude\` not on PATH; install Claude Code first"
 
@@ -527,20 +638,32 @@ cmd_lint() {
     head_before="$(git -C "$vault" rev-parse HEAD 2>/dev/null || true)"
   fi
 
+  local identity forced_json
+  identity="$(compute_identity_string)"
+  forced_json="false"
+  $force && forced_json="true"
+
   prompt="You have one task: invoke the \`linter\` subagent (defined in this plugin's agents/linter.md) via the Agent tool, passing this exact string as its ARGUMENTS:
 
 $vault
 
 The linter's system prompt encodes the full read-only audit contract — it knows what to do once it has the vault path. Output format: $format. If the format is \"json\", instruct the linter to emit a single JSON object with a \`findings: [...]\` array of {type, severity, path, message, suggested_action} records (and NO human-readable text). If \"text\", findings are one per line in the shape \`[TYPE] path | message\`, grouped by severity.
 
-Do NOT attempt the audit yourself; the linter subagent must own it. Do NOT write to the vault — the linter is read-only. Do not modify this plugin repo. Report the linter's output verbatim."
+After the audit, instruct the linter to record the run by writing \`_meta/last-run/linter.json\` (the SOLE permitted write — sharded per-role, design §Q4; the linter MUST NOT touch _meta/last-run/curator.json), then commit with message \`kunskap: linter run record\`. The fields MUST set:
+  ran_at: \"<iso-8601 UTC at end of audit>\"
+  by: \"$identity\"
+  findings_count: <integer count of findings emitted>
+  forced: $forced_json
 
+Do NOT attempt the audit yourself; the linter subagent must own it. Do NOT write any path other than \`_meta/last-run/linter.json\` — the CLI invariant check will fail the run if the linter touches anything else (including _meta/last-run/curator.json). Do not modify this plugin repo. Report the linter's audit output verbatim (the run-record commit is metadata, not part of the findings stdout)."
+
+  # CWD fix (P4 §2): cd into the vault before spawning so the headless
+  # agent's filesystem sandbox covers the vault. --add-dir is belt-and-
+  # suspenders for the same reason — Claude Code 1.x supports it.
   # Capture exit code WITHOUT `if !` — the negated form sets $? to 0 (the
-  # status of `!` itself), losing the real claude failure code. Pass-1
-  # block-ship bug, confirmed via `bash -c 'if ! (exit 7); then echo $?; fi'`
-  # → 0. The `if cmd; else x=$?` form propagates correctly.
+  # status of `!` itself), losing the real claude failure code (P4 §1).
   local agent_out agent_status
-  if agent_out="$(claude --plugin-dir "$root" --permission-mode acceptEdits -p "$prompt")"; then
+  if agent_out="$( cd "$vault" && claude --add-dir "$vault" --plugin-dir "$root" --permission-mode acceptEdits -p "$prompt" )"; then
     agent_status=0
   else
     agent_status=$?
@@ -551,23 +674,54 @@ Do NOT attempt the audit yourself; the linter subagent must own it. Do NOT write
   # Exit-code priority: invariant violation (2) > agent failure (passthrough)
   # > text-mode findings (1) > clean (0). Invariant fires first because a
   # write is the load-bearing contract failure regardless of agent exit.
+  #
+  # Whitelist semantics (P5): the linter is permitted to write exactly
+  # `_meta/last-run/linter.json` — committed and/or staged — to record its
+  # run. The curator owns _meta/last-run/curator.json (sharded per-role —
+  # design §Q4 "no shared file" invariant); linter must NOT touch it. Any
+  # OTHER touched path (commit content or working tree) is a violation.
+  local allowed_path="_meta/last-run/linter.json"
   if $has_git; then
     local status_after head_after
     status_after="$(git -C "$vault" status --porcelain --untracked-files=all 2>/dev/null || true)"
     head_after="$(git -C "$vault" rev-parse HEAD 2>/dev/null || true)"
     if [[ "$status_before" != "$status_after" || "$head_before" != "$head_after" ]]; then
-      {
-        echo "kunskap: lint MUST 8 violation — vault state changed during linter run (read-only contract broken)."
-        echo "  If the curator (or anything else) was running concurrently, that's the diagnostic — re-run \`kunskap lint\` when no other writers are active."
-        if [[ "$head_before" != "$head_after" ]]; then
-          echo "  HEAD: $head_before → $head_after (commit happened during the run)"
-        fi
-        if [[ "$status_before" != "$status_after" ]]; then
-          echo "  Working-tree diff:"
-          diff <(printf '%s\n' "$status_before") <(printf '%s\n' "$status_after") || true
-        fi
-      } >&2
-      return 2
+      local violations=()
+
+      if [[ "$head_before" != "$head_after" && -n "$head_before" ]]; then
+        local p
+        while IFS= read -r p; do
+          [[ -z "$p" ]] && continue
+          [[ "$p" == "$allowed_path" ]] || violations+=("commit:$p")
+        done < <(git -C "$vault" log --name-only --pretty=format: "$head_before..$head_after" 2>/dev/null | sort -u)
+      fi
+
+      # Porcelain format is `XY <path>` (3-char status prefix); strip
+      # and compare new entries against the whitelist.
+      local line p
+      while IFS= read -r line; do
+        [[ -z "$line" ]] && continue
+        p="${line:3}"
+        # Rename: `R  old -> new` — take the new path.
+        [[ "$p" == *' -> '* ]] && p="${p##* -> }"
+        [[ "$p" == "$allowed_path" ]] || violations+=("porcelain:$p")
+      done < <(comm -13 \
+                  <(printf '%s\n' "$status_before" | sort) \
+                  <(printf '%s\n' "$status_after"  | sort))
+
+      if [[ ${#violations[@]} -gt 0 ]]; then
+        {
+          echo "kunskap: lint MUST 8 violation — linter wrote outside the whitelist (only \`$allowed_path\` is permitted)."
+          echo "  If the curator (or anything else) was running concurrently, that's the diagnostic — re-run \`kunskap lint\` when no other writers are active."
+          if [[ "$head_before" != "$head_after" ]]; then
+            echo "  HEAD: $head_before → $head_after"
+          fi
+          echo "  Disallowed paths touched:"
+          local v
+          for v in "${violations[@]}"; do echo "    $v"; done
+        } >&2
+        return 2
+      fi
     fi
   fi
 

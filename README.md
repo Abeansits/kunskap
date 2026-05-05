@@ -4,9 +4,11 @@ Knowledge-base plugin for Claude Code. Sessions write loose notes into an inbox;
 
 ## Status
 
-**v0.4.0 — P4 linter agent.** Adds `agents/linter.md` (read-only Karpathy "Linting" — drift across articles, stub-cluster suggestions, draft staleness, offline-machine arrivals per Risk #4, curator-idle, identity-mismatch), `commands/lint.md`, and `bin/kunskap lint [--vault <abs-path>] [--format text|json]`. The linter is forbidden from writing to the vault; the CLI verifies `git status --porcelain` snapshots are equal before/after the agent run. Exit codes: `0` = no findings, `1` = findings present, `2` = read-only invariant violation.
+**v0.5.0 — P5 role assignment.** Multiplayer-ready. `bin/kunskap curate` and `bin/kunskap lint` now enforce `_meta/roles.toml` — only the machine identified as `roles.<role>.primary` runs the agent without `--force`. `_meta/last-run/{curator,linter}.json` (sharded per-role — design §Q4 "no shared file both are racing on" invariant) records every run (`by`, counts, head oids, `forced` flag) for audit. The headless-agent CWD bug (P4 §2: sandbox scoped to spawning CWD, not `--plugin-dir`) is fixed — `curate` / `lint` now work from any directory.
 
-The phased rollout (P0 → P6) is in [`docs/kunskap-design.md`](docs/kunskap-design.md). The MVP is P0 → P3.
+Single-primary, no fallback, no advisory lock (design §Q4 — pass-2 review explicitly rejected the lock variant after a TOCTOU finding). The linter agent gets one explicit whitelisted write — `_meta/last-run/linter.json` — to record its own run; the CLI invariant check refuses any other path. The curator owns `_meta/last-run/curator.json` and never writes the linter's shard.
+
+The phased rollout (P0 → P6) is in [`docs/kunskap-design.md`](docs/kunskap-design.md). The MVP is P0 → P3; multiplayer-safety is P5; P6 (search + marketplace) is the only remaining phase.
 
 ## Install (development; marketplace at P6)
 
@@ -52,6 +54,33 @@ kunskap init ~/Developer/team-vault --name "Team Vault" \
 
 `init` scaffolds the full vault layout, seeds neutral example notes (so a fresh vault passes `kunskap audit-coverage` and is immediately runnable by the curator), and prints a "next steps" panel. It does NOT auto-commit — review with `git status` before your seed commit. Re-running on an existing non-empty target requires `--force` (with interactive confirmation; pass `--yes` or set `KUNSKAP_AUTO_CONFIRM=1` in scripts).
 
+## Roles (P5)
+
+The curator and linter run only on their designated machine by default. To check who's primary:
+
+```bash
+cat <vault>/_meta/roles.toml
+```
+
+To hand off the curator to a teammate:
+
+```bash
+vim <vault>/_meta/roles.toml          # change roles.curator.primary
+git -C <vault> commit -am "curator: hand off to <name>"
+git -C <vault> push
+```
+
+To override the role check on a specific run:
+
+```bash
+kunskap curate --vault <vault> --force --yes
+kunskap lint   --vault <vault> --force --yes
+```
+
+`--force` runs are recorded with `forced: true` in `_meta/last-run/<role>.json` for audit. The interactive confirmation prompt is bypassed by `--yes` or `KUNSKAP_AUTO_CONFIRM=1` (cron / CI scenarios).
+
+A freshly-init'd vault carries `primary = "TBD"` for both roles — that warns and proceeds (solo workflows and pre-handoff teams need to work without role config). Set the primaries when the vault becomes shared between two or more machines.
+
 After the curator routes drafts to `wiki/_drafts/`, triage them with:
 
 ```bash
@@ -82,8 +111,8 @@ Full design: [`docs/kunskap-design.md`](docs/kunskap-design.md). Phased rollout 
 | **P1** | Curator agent + manual trigger + curator-contract tests. |
 | **P2** | `/kunskap:learn enable\|disable\|status` + `SessionStart` / `SessionEnd` sync hooks. |
 | **P3** | `kunskap init <vault-path>` + drafts surface (list/show/approve/reject/defer). MVP complete. |
-| **P4 (this release)** | Linter agent + health checks (drift, stub clusters, draft staleness, offline arrivals, curator-idle, identity-mismatch). Read-only contract. |
-| **P5** | Single-primary role assignment (`_meta/roles.toml`). |
+| **P4** | Linter agent + health checks (drift, stub clusters, draft staleness, offline arrivals, curator-idle, identity-mismatch). Read-only contract. |
+| **P5 (this release)** | Single-primary role assignment (`_meta/roles.toml`) + `_meta/last-run/{curator,linter}.json` (sharded per-role) + CWD-fix for headless agents. Multiplayer-ready. |
 | **P6** | Search (`kunskap recall`) + marketplace listing + polish. |
 
 ## License

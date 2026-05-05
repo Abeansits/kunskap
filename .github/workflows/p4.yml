@@ -116,19 +116,24 @@ jobs:
         run: |
           # Hard contract for P4: a freshly-init'd vault must satisfy the
           # lint preflight (vault validation passes; only claude-on-PATH
-          # would gate the actual agent run).
+          # would gate the actual agent run). P5 added an identity check
+          # before claude-PATH; set identity here so the preflight can reach
+          # the external check.
           tmp="$(mktemp -d)/vault"
+          xdg="$(mktemp -d)"
+          mkdir -p "$xdg/kunskap"
+          printf '[user]\nname  = "ci"\nhost  = "runner"\n' > "$xdg/kunskap/identity.toml"
           KUNSKAP_AUTO_CONFIRM=1 ./bin/kunskap init "$tmp" --name "CI Smoke"
           # Without claude on PATH, lint should fail at the claude-PATH check
-          # AFTER vault validation + agent-file check passed (P1 §5 ordering).
-          if PATH="/usr/bin:/bin" ./bin/kunskap lint --vault "$tmp" 2>&1 | tee /tmp/lint.out; then
+          # AFTER vault validation + agent-file + role-check passed.
+          if XDG_CONFIG_HOME="$xdg" PATH="/usr/bin:/bin" ./bin/kunskap lint --vault "$tmp" 2>&1 | tee /tmp/lint.out; then
             echo "expected non-zero exit when claude is not on PATH"; exit 1
           fi
           grep -q 'claude' /tmp/lint.out
           # Vault must remain unmodified by the failed preflight.
           ( cd "$tmp" && git add . && git -c user.email=ci@k -c user.name=ci commit -q -m seed )
           before="$(git -C "$tmp" status --porcelain)"
-          PATH="/usr/bin:/bin" ./bin/kunskap lint --vault "$tmp" 2>/dev/null || true
+          XDG_CONFIG_HOME="$xdg" PATH="/usr/bin:/bin" ./bin/kunskap lint --vault "$tmp" 2>/dev/null || true
           after="$(git -C "$tmp" status --porcelain)"
           [[ "$before" == "$after" ]] || { echo "lint mutated vault on failed preflight"; exit 1; }
 

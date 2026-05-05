@@ -99,6 +99,25 @@ setup() {
   linter_prompt_contains "best-effort defense in depth"
 }
 
+@test "MUST 8 — _meta/last-run/linter.json is the SOLE whitelisted write (P5)" {
+  linter_prompt_contains "SOLE permitted write"
+  linter_prompt_contains "_meta/last-run/linter.json"
+}
+
+@test "MUST 8 — sharded per-role layout, linter never touches curator shard (P5 Pass-2)" {
+  linter_prompt_contains "_meta/last-run/curator.json"
+  linter_prompt_contains "no shared file both are racing on"
+}
+
+@test "MUST 9 — record the run, overwrite (no merge needed; sharded) (P5)" {
+  linter_prompt_contains "MUST 9 — record the run"
+  linter_prompt_contains "Overwrite — no merge needed"
+}
+
+@test "MUST 9 — run-record commit message is \`kunskap: linter run record\` (P5)" {
+  linter_prompt_contains "kunskap: linter run record"
+}
+
 # ---------- MUST clauses (each finding type has its own fingerprint) ----------
 
 @test "MUST 1 — DRIFT finding type is mandated" {
@@ -144,9 +163,8 @@ setup() {
   linter_prompt_contains "Risk #4"
 }
 
-@test "MUST 4 — last-run.json#curator.by + 48h threshold spelled out" {
-  linter_prompt_contains "_meta/last-run.json"
-  linter_prompt_contains "curator.by"
+@test "MUST 4 — last-run/curator.json#by + 48h threshold spelled out" {
+  linter_prompt_contains "_meta/last-run/curator.json"
   linter_prompt_contains "≥ 48 hours"
 }
 
@@ -159,7 +177,7 @@ setup() {
   linter_prompt_contains "[CURATOR-IDLE]"
   linter_prompt_contains "ran_at"
   # `or the file is missing entirely` is unique to MUST 5 — the case where
-  # last-run.json is absent should still emit the finding. Without this
+  # last-run/curator.json is absent should still emit the finding. Without this
   # anchor, MUST 5 could be deleted and the test would still pass on
   # substring matches from MUST 4 + the output-shape ([CURATOR-IDLE]).
   linter_prompt_contains "or the file is missing entirely"

@@ -24,11 +24,16 @@ setup_file() {
 setup() {
   [[ -z "${BATS_BEHAVIORAL_SKIP:-}" ]] || skip "$BATS_BEHAVIORAL_SKIP"
   TMPVAULT="$(make_empty_init_vault)"
-  export TMPVAULT
+  TMPXDG="$(make_temp_xdg)"
+  export TMPVAULT TMPXDG
+  export XDG_CONFIG_HOME="$TMPXDG"
+  # P5: identity required for role check + run record. Empty-init vault ships
+  # roles.toml with primary="TBD" → role check warns and proceeds.
+  write_identity_toml "$TMPXDG"
 }
 
 teardown() {
-  cleanup_temp_dirs TMPVAULT
+  cleanup_temp_dirs TMPVAULT TMPXDG
 }
 
 run_linter() {
@@ -95,8 +100,9 @@ EOF
   note_iso="$(date_ago -72h +%Y-%m-%dT%H:%M:%SZ)"
   ran_iso="$(date_ago -50h +%Y-%m-%dT%H:%M:%SZ)"
   mkdir -p "$TMPVAULT/_meta"
-  cat > "$TMPVAULT/_meta/last-run.json" <<EOF
-{ "curator": { "ran_at": "$ran_iso", "by": "sebastian@laptop", "inbox_processed": 0, "articles_written": 0, "drafts_routed": 0 } }
+  mkdir -p "$TMPVAULT/_meta/last-run"
+  cat > "$TMPVAULT/_meta/last-run/curator.json" <<EOF
+{ "ran_at": "$ran_iso", "by": "sebastian@laptop", "inbox_processed": 0, "articles_written": 0, "drafts_routed": 0 }
 EOF
   cat > "$TMPVAULT/raw/inbox/learning-matt-discovery-${note_iso:0:10}.md" <<EOF
 ---
@@ -121,9 +127,9 @@ EOF
 @test "MUST 5 — curator ran 60h ago emits [CURATOR-IDLE]" {
   local stale_run
   stale_run="$(date_ago -60h +%Y-%m-%dT%H:%M:%SZ)"
-  mkdir -p "$TMPVAULT/_meta"
-  cat > "$TMPVAULT/_meta/last-run.json" <<EOF
-{ "curator": { "ran_at": "$stale_run", "by": "sebastian@laptop" } }
+  mkdir -p "$TMPVAULT/_meta/last-run"
+  cat > "$TMPVAULT/_meta/last-run/curator.json" <<EOF
+{ "ran_at": "$stale_run", "by": "sebastian@laptop" }
 EOF
   ( cd "$TMPVAULT" && git add . && git -c user.email=t@l -c user.name=t commit -q -m "seed stale curator-run" )
   run run_linter
@@ -196,7 +202,9 @@ EOF
   echo "test note" > "$TMPVAULT/raw/inbox/note-bob.md"
   ( cd "$TMPVAULT" && git add . \
       && git -c user.email=bob@y -c user.name=bob commit -q -m "unauthorized writer" )
-  run run_linter
+  # The fixture identity ci@runner doesn't match alice@x; --force --yes
+  # bypasses the P5 role check so the audit can fire.
+  run run_linter --force --yes
   [[ "$output" == *"[IDENTITY-MISMATCH]"* ]]
 }
 
@@ -215,9 +223,9 @@ EOF
   # Stack a couple of scenarios so we expect at least one finding.
   local stale_run
   stale_run="$(date_ago -60h +%Y-%m-%dT%H:%M:%SZ)"
-  mkdir -p "$TMPVAULT/_meta"
-  cat > "$TMPVAULT/_meta/last-run.json" <<EOF
-{ "curator": { "ran_at": "$stale_run", "by": "sebastian@laptop" } }
+  mkdir -p "$TMPVAULT/_meta/last-run"
+  cat > "$TMPVAULT/_meta/last-run/curator.json" <<EOF
+{ "ran_at": "$stale_run", "by": "sebastian@laptop" }
 EOF
   ( cd "$TMPVAULT" && git add . && git -c user.email=t@l -c user.name=t commit -q -m "seed json scenario" )
   run run_linter --format json

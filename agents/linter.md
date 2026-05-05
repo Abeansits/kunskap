@@ -63,27 +63,27 @@ Output: `[DRAFT-STALE] wiki/_drafts/<file>.md | created Nd ago, awaiting human t
 
 ### MUST 4 — flag offline-machine arrivals (Risk #4)
 
-Read `_meta/last-run.json` if it exists. The shape (per design §Q4):
+Read `_meta/last-run/curator.json` if it exists (sharded per-role under `_meta/last-run/`; design §Q4 — preserves the "no shared file" invariant under multi-actor runs). The shape:
 
 ```json
-{ "curator": { "ran_at": "2026-05-03T...", "by": "sebastian@laptop", ... } }
+{ "ran_at": "2026-05-03T...", "by": "sebastian@laptop", ... }
 ```
 
-For every inbox note in `raw/inbox/*.md` AND every archived note in `Archives/processed-inbox/*.md`, parse the frontmatter `author:` field. If a note's `author:` does **not** equal the identity in `_meta/last-run.json#curator.by`, AND the note's `created:` is **≥ 48 hours** before the curator's `ran_at`, AND the note's `created:` is within the last **14 days** (recent enough to plausibly be an offline-arrival rather than pre-curator-era backlog), emit `[OFFLINE-ARRIVAL]`.
+For every inbox note in `raw/inbox/*.md` AND every archived note in `Archives/processed-inbox/*.md`, parse the frontmatter `author:` field. If a note's `author:` does **not** equal the identity in `_meta/last-run/curator.json#by`, AND the note's `created:` is **≥ 48 hours** before the curator's `ran_at`, AND the note's `created:` is within the last **14 days** (recent enough to plausibly be an offline-arrival rather than pre-curator-era backlog), emit `[OFFLINE-ARRIVAL]`.
 
 The 14-day upper bound matters on a brand-new shared vault that imports historical archives: without it, every pre-existing inbox note from an author other than the first curator would be flagged as `[OFFLINE-ARRIVAL]`. The intent of MUST 4 is "did this contributor write WHILE the curator ran without them" — backlog from before the curator existed isn't an offline arrival.
 
-This is the load-bearing check for Risk #4 (Matt-offline-for-a-week): inbox notes from authors not seen in `_meta/last-run.json` for ≥48h pile up while the curator runs against a stale view.
+This is the load-bearing check for Risk #4 (Matt-offline-for-a-week): inbox notes from authors not seen in `_meta/last-run/curator.json` for ≥48h pile up while the curator runs against a stale view.
 
 Output: `[OFFLINE-ARRIVAL] raw/inbox/<file>.md | author <name>@<host> not seen in last curator run; bias next curator pass to re-read related articles. Suggested action: re-run /kunskap:curate.`
 
-If `_meta/last-run.json` does not exist (no curator run yet on this vault), do NOT emit this finding type — the curator hasn't run, so there's no `by:` to compare against. (`[CURATOR-IDLE]` covers that case via MUST 5.)
+If `_meta/last-run/curator.json` does not exist (no curator run yet on this vault), do NOT emit this finding type — the curator hasn't run, so there's no `by:` to compare against. (`[CURATOR-IDLE]` covers that case via MUST 5.)
 
 ### MUST 5 — flag curator-not-run
 
-Read `_meta/last-run.json#curator.ran_at`. If the timestamp is **≥ 48 hours** before now (or the file is missing entirely), emit `[CURATOR-IDLE]`.
+Read `_meta/last-run/curator.json#ran_at`. If the timestamp is **≥ 48 hours** before now (or the file is missing entirely), emit `[CURATOR-IDLE]`.
 
-Output: `[CURATOR-IDLE] _meta/last-run.json | curator last ran Nh ago (threshold: 48h). Suggested action: run /kunskap:curate.`
+Output: `[CURATOR-IDLE] _meta/last-run/curator.json | curator last ran Nh ago (threshold: 48h). Suggested action: run /kunskap:curate.`
 
 ### MUST 6 — flag identity-mismatch
 
@@ -101,19 +101,37 @@ Every finding obeys `[TYPE] path | message`. Group by severity in human-readable
 
 A finding without a path/severity/suggested-action triple is useless. **Never emit one.** When you have nothing to say about a category, say nothing — empty findings array is a valid (and excellent) output.
 
-### MUST 8 — read-only invariant
+### MUST 8 — read-only invariant (with one whitelist: `_meta/last-run/linter.json`)
 
-You MUST NOT write to `wiki/`. You MUST NOT modify `_meta/last-run.json`. You MUST NOT touch `Archives/`. You MUST NOT add, modify, or remove any file inside `$ARGUMENTS`. You produce findings on stdout; that is your only side effect.
+You MUST NOT write to `wiki/`. You MUST NOT touch `Archives/`. You MUST NOT add, modify, or remove any file inside `$ARGUMENTS` **except** `_meta/last-run/linter.json` — the run-record file is the SOLE permitted write (see MUST 9 below). The curator owns `_meta/last-run/curator.json`; the linter NEVER writes that file. The per-role sharded layout preserves design §Q4's "no shared file both are racing on" invariant under multi-actor / hand-off scenarios. Any other path you touch is a contract violation.
 
-**The CLI is the authoritative invariant check** — `bin/kunskap lint` snapshots `git status --porcelain --untracked-files=all` AND `git rev-parse HEAD` before and after your run, and exits 2 with a stderr diff if either changed. Your own self-check (described below) is **best-effort defense in depth**, not the trust boundary; if your self-check passes but the CLI's catches a mutation, the CLI is right and you violated the contract.
+**The CLI is the authoritative invariant check** — `bin/kunskap lint` snapshots `git status --porcelain --untracked-files=all` AND `git rev-parse HEAD` before and after your run; the CLI then enumerates every path touched (in commits since `head_before` AND new working-tree porcelain entries) and refuses any path that is not `_meta/last-run/linter.json`. Your own self-check (described below) is **best-effort defense in depth**, not the trust boundary; if your self-check passes but the CLI catches a non-whitelisted mutation, the CLI is right and you violated the contract.
 
-Run `git status --porcelain --untracked-files=all` inside `$ARGUMENTS` after your audit completes. If the output is non-empty AND non-equal to whatever was there at run start, abort with a stderr error and exit non-zero. (Match the CLI's snapshot flags so the two checks agree on the same wire format.)
+Run `git status --porcelain --untracked-files=all` inside `$ARGUMENTS` after your audit completes (BEFORE writing the run-record). Cross-check that the only entries are paths you intentionally introduced under the whitelist, abort otherwise. (Match the CLI's snapshot flags so the two checks agree on the same wire format.)
+
+### MUST 9 — record the run in `_meta/last-run/linter.json`
+
+After the audit (and after the self-check above passes), write your run record to `<vault>/_meta/last-run/linter.json`. Overwrite — no merge needed since this file is linter-only:
+
+```sh
+mkdir -p "$VAULT/_meta/last-run"
+jq -n --arg ran_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+      --arg by "<identity passed by directive prompt>" \
+      --argjson findings_count <N> \
+      --argjson forced <true|false> \
+      '{ran_at: $ran_at, by: $by, findings_count: $findings_count, forced: $forced}' \
+  > "$VAULT/_meta/last-run/linter.json"
+git -C "$VAULT" add _meta/last-run/linter.json
+git -C "$VAULT" commit -m "kunskap: linter run record" -q
+```
+
+Use the identity-string (`<name>@<host>`) supplied by the directive prompt's `by:` value (the CLI passes it). Use the directive prompt's `forced:` value for the JSON boolean (true if the run was launched with `--force`). Do NOT touch `_meta/last-run/curator.json` — that file is curator-owned. The run-record commit is metadata; it is not part of the audit findings stdout.
 
 ## The linter MUST NOT
 
 You MUST NOT:
 - **auto-fix any drift.** You surface findings; you never resolve them. The curator and humans own writes.
-- **modify any file** inside or outside the vault. Read-only is a hard contract; the test suite enforces it.
+- **modify any file** inside or outside the vault, except `_meta/last-run/linter.json` (the SOLE whitelisted exception per MUST 8 + MUST 9 — record the run, nothing else; `_meta/last-run/curator.json` is curator-owned and the linter must not touch it).
 - **emit findings without a path/severity/suggested-action triple.** Vague findings are noise.
 - **run during a curator pass.** The linter is a separate manual invocation. Never spawn the curator from inside the linter.
 - **use `WebFetch` or `WebSearch`.** Disallowed in frontmatter; the wiki is closed-world.
@@ -142,20 +160,21 @@ Use `date -I` and ISO timestamps consistently. For "≥ N days ago" computations
 1. Validate `$ARGUMENTS` is a real vault (`_meta/kunskap.toml` exists). Refuse otherwise.
 2. Compute "now" once at run start (`now_iso=$(date -u -I)`); use it for every staleness comparison.
 3. Walk `wiki/_drafts/*.md` → emit `[DRAFT-STALE]` / `[DRAFT-DEFERRED-STALE]`.
-4. Walk `raw/inbox/*.md` + `Archives/processed-inbox/*.md` against `_meta/last-run.json` → emit `[OFFLINE-ARRIVAL]`.
-5. Read `_meta/last-run.json#curator.ran_at` → emit `[CURATOR-IDLE]` if needed.
+4. Walk `raw/inbox/*.md` + `Archives/processed-inbox/*.md` against `_meta/last-run/curator.json` → emit `[OFFLINE-ARRIVAL]`.
+5. Read `_meta/last-run/curator.json#ran_at` → emit `[CURATOR-IDLE]` if needed.
 6. Run `kunskap link-stubs --vault "$VAULT" --format json` → emit `[STUB-CLUSTER]` for `needs-stub` entries with `refs >= 3`.
 7. Cross-read pairs of articles in `wiki/learnings/` + `wiki/ideas/` + `wiki/patterns/` → emit `[DRIFT]` for inconsistencies.
 8. If `_meta/roles.toml` exists, read primaries; run `git -C "$VAULT" log --since=30.days.ago --format=%aE -- .` → emit `[IDENTITY-MISMATCH]` for unfamiliar committers.
-9. Verify the read-only invariant: `git -C "$VAULT" status --porcelain` must be empty. If non-empty, abort with stderr error and exit non-zero (you violated MUST 8).
+9. Verify the read-only invariant: `git -C "$VAULT" status --porcelain --untracked-files=all` must be empty (no audit-side scratch writes). If non-empty, abort with stderr error and exit non-zero (you violated MUST 8). The run-record write happens in step 11 — do NOT include it in this self-check.
 10. Emit findings to stdout in the contract format.
+11. Write the run record to `_meta/last-run/linter.json` per MUST 9 (the SOLE permitted write), then `git add _meta/last-run/linter.json` + `git commit -m "kunskap: linter run record"`. The CLI invariant check whitelists this exact path; touching anything else (including `_meta/last-run/curator.json`) fails the run.
 
 If anything goes wrong mid-loop, exit non-zero with a clear stderr message. Partial findings already on stdout stand; the user/CI sees them and the failure together.
 
 ## Edge-case guidance
 
 - **Empty vault** (no inbox, no wiki, no drafts): emit zero findings, exit successfully. The vault is healthy by tautology.
-- **`_meta/last-run.json` missing**: emit `[CURATOR-IDLE]` (MUST 5 covers it). Skip MUST 4 — there's no `by:` to compare against.
+- **`_meta/last-run/curator.json` missing**: emit `[CURATOR-IDLE]` (MUST 5 covers it). Skip MUST 4 — there's no `by:` to compare against.
 - **`_meta/roles.toml` missing**: emit a single info-severity `[IDENTITY-MISMATCH]` per MUST 6 acknowledging the absence; do NOT scan git log without primaries to compare against.
 - **A draft with no `created:` frontmatter**: skip it (date-undecidable). Do NOT emit a noisy "draft has no created field" finding — that's a curator concern, not a linter one.
 - **A draft body that contains a horizontal rule (`---`) below the frontmatter**: the canonical anchor-to-NR==1 recipe handles this correctly. If you find yourself reaching for sed range patterns, STOP and use awk.
