@@ -71,7 +71,7 @@ EOF
 name = "fuzz"
 shared = false
 EOF
-  mkdir -p "$TMPVAULT/raw/inbox"   # validate_vault requires it
+  mkdir -p "$TMPVAULT/raw/inbox" "$TMPVAULT/wiki"   # validate_vault requires both
   write_identity_toml "$TMPXDG" alice desktop
   PATH="/usr/bin:/bin" run "$KUNSKAP_BIN" lint --vault "$TMPVAULT"
   [[ "$status" -ne 0 ]]

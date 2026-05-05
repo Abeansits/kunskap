@@ -60,6 +60,16 @@ teardown_file() {
   [[ "$output" == *"raw/inbox/"* ]]
 }
 
+@test "curate --vault dies if wiki/ missing" {
+  empty="$(mktemp -d)"
+  mkdir -p "$empty/_meta" "$empty/raw/inbox"
+  echo "[vault]" > "$empty/_meta/kunskap.toml"
+  run "$KUNSKAP_BIN" curate --vault "$empty"
+  rm -rf "$empty"
+  [[ "$status" -ne 0 ]]
+  [[ "$output" == *"missing wiki/"* ]]
+}
+
 @test "curate --check passes on a healthy vault" {
   run "$KUNSKAP_BIN" curate --vault "$TMPVAULT" --check
   [[ "$status" -eq 0 ]]

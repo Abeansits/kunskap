@@ -1,0 +1,13 @@
+filters:
+  and:
+    - file.inFolder("wiki/_drafts")
+views:
+  - type: table
+    name: "Drafts by age"
+    order:
+      - file.name
+      - note.created
+      - note.confidence
+      - note.reason
+      - note.deferred_at
+      - note.source_count

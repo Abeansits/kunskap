@@ -43,6 +43,17 @@ linter_prompt_contains() {
 make_temp_proj() { mktemp -d -t kunskap-proj.XXXXXX; }
 make_temp_xdg()  { mktemp -d -t kunskap-xdg.XXXXXX; }
 
+# Standard bats setup: temp project + temp XDG, both exported, with
+# XDG_CONFIG_HOME pointed at the XDG dir so `kunskap config user` and friends
+# write into the test sandbox. Six bats files repeated this 4-line block
+# verbatim before extraction; teardown still calls `cleanup_temp_dirs` directly.
+setup_proj_xdg() {
+  TMPPROJ="$(make_temp_proj)"
+  TMPXDG="$(make_temp_xdg)"
+  export TMPPROJ TMPXDG
+  export XDG_CONFIG_HOME="$TMPXDG"
+}
+
 # Init a fresh vault and seed two drafts (one high-confidence + older, one
 # low-confidence + newer). Echoes the vault path. Used by drafts-cli.bats and
 # whatever P4+ needs a drafts-loaded vault.

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="0.5.0"
+VERSION="1.0.0"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/kunskap"
 IDENTITY_FILE="$CONFIG_DIR/identity.toml"
 
@@ -32,6 +32,7 @@ validate_vault() {
   [[ -d "$vault" ]] || die "vault path not found: $vault"
   [[ -f "$vault/_meta/kunskap.toml" ]] || die "not a kunskap vault (missing _meta/kunskap.toml): $vault"
   [[ -d "$vault/raw/inbox" ]] || die "not a kunskap vault (missing raw/inbox/): $vault"
+  [[ -d "$vault/wiki" ]] || die "not a kunskap vault (missing wiki/): $vault"
 }
 
 cmd_help() {
@@ -58,6 +59,7 @@ Usage:
   kunskap drafts defer   <id-or-slug> [--vault <abs-path>]
   kunskap link-stubs --vault <abs-path> [--format text|json]
   kunskap audit-coverage --vault <abs-path> [--format text|json]
+  kunskap recall <query> [--vault <abs-path>] [--author <X>] [--tag <Y>] [--limit <N>] [--format text|json]
 
 Notes:
   --host is recommended on \`config user\`. Without it, host derives from
@@ -107,6 +109,17 @@ Notes:
   approve/reject perform git mv + a single commit; reject requires --reason.
 
   \`link-stubs\` and \`audit-coverage\` are pure-shell — no LLM, no auth.
+
+  \`recall\` searches \`<vault>/wiki/\` and \`<vault>/raw/inbox/\` for the
+  query. Stage 1 is \`rg --type md\` (load-bearing). Stage 2 is the Obsidian
+  CLI (\`obsidian search\`), only when the desktop app is running AND the
+  CLI is enabled (Settings > General > Advanced > Command line interface);
+  detection falls back to /Applications/Obsidian.app on macOS. Stage 2
+  reranks paths by Obsidian's relevance; if it's unavailable, Stage 1
+  carries on its own. Read-only: never writes to the vault. Exit codes:
+  0 = at least one hit, 1 = no hits. Vault resolves from --vault, then the
+  project marker (.claude/kunskap.json). Identity-independent — works on
+  any machine regardless of role.
 EOF
 }
 
@@ -591,18 +604,8 @@ cmd_lint() {
   [[ "$format" == "text" || "$format" == "json" ]] || die "lint: --format must be text or json (got: $format)"
   [[ ${#extra[@]} -eq 0 ]] || die "lint: unknown extra args: ${extra[*]}"
 
-  # Vault resolution: flag wins, else project marker (P2 enable pattern).
   local vault
-  if [[ -n "$vault_flag" ]]; then
-    vault="$vault_flag"
-  else
-    local marker
-    marker="$(marker_path)"
-    [[ -f "$marker" ]] \
-      || die "lint: no --vault and no project marker at $marker; pass --vault <abs> or run \`kunskap learn enable\` first"
-    vault="$(jq -r '.vault // ""' "$marker" 2>/dev/null || true)"
-    [[ -n "$vault" ]] || die "lint: marker $marker has no \`vault\` field"
-  fi
+  vault="$(resolve_vault_flag_or_marker lint "$vault_flag")"
   validate_vault "$vault"
 
   # Self-state checks before external (P1 §5). Plugin shape, then vault
@@ -1166,6 +1169,26 @@ cmd_init() {
 
 # Resolve the vault: --vault wins; otherwise read .claude/kunskap.json from
 # CLAUDE_PROJECT_DIR/PWD (matching hooks). Errors when neither resolves.
+# Resolve vault path: --vault flag wins, else project marker. Echoes the
+# path. Validation is the caller's responsibility (each subcommand has its
+# own preconditions — full kunskap vault for lint/recall, drafts dir for
+# `drafts`). Label prefixes the diagnostics so the user sees which command
+# failed.
+resolve_vault_flag_or_marker() {
+  local label="$1" explicit="$2"
+  if [[ -n "$explicit" ]]; then
+    printf '%s\n' "$explicit"
+    return 0
+  fi
+  local marker vault
+  marker="$(marker_path)"
+  [[ -f "$marker" ]] \
+    || die "$label: no --vault and no project marker at $marker; pass --vault <abs> or run \`kunskap learn enable\` first"
+  vault="$(jq -r '.vault // ""' "$marker")"
+  [[ -n "$vault" ]] || die "$label: marker $marker has no \`vault\` field"
+  printf '%s\n' "$vault"
+}
+
 resolve_drafts_vault() {
   local explicit="$1" marker vault
   if [[ -n "$explicit" ]]; then
@@ -1535,6 +1558,282 @@ cmd_drafts() {
   esac
 }
 
+# Output `author<TAB>tags-csv` from frontmatter. Anchored to NR == 1 per
+# P3 §1+§2 — sed-range patterns silently corrupt files whose body contains
+# horizontal-rule `---`, and an unanchored awk drops frontmatter-less files.
+# Suggestion [Refactor] ✨: see `list_draft_records` (line 1207) for the same
+# scalar+block-list state machine on a different field set; v1.x candidate
+# for a shared `read_frontmatter_fields <file> <scalars> <lists>` helper.
+read_recall_frontmatter() {
+  local file="$1"
+  # YAML accepts both `"..."` and `'...'` for scalars and tag-list items.
+  # Strip ONLY matching outer quotes — naive `gsub` of all quotes destroys
+  # legitimate apostrophes in values like `O'Reilly` (Codex Pass 2
+  # SHOULD-FIX). `\047` is awk's octal escape for `'`.
+  awk '
+    function strip_outer_quotes(s,    out) {
+      out = s
+      if (out ~ /^".*"$/)        { sub(/^"/, "", out); sub(/"$/, "", out) }
+      else if (out ~ /^\047.*\047$/) {
+        sub(/^\047/, "", out); sub(/\047$/, "", out)
+        gsub(/\047\047/, "\047", out)   # YAML escape: doubled quote -> one
+      }
+      return out
+    }
+    BEGIN { fm = 0; saw_fm = 0; in_tags = 0; author = ""; tags = "" }
+    NR == 1 && /^---$/ { saw_fm = 1; fm = 1; next }
+    !saw_fm { exit }
+    fm == 1 && /^---$/ { exit }
+    fm == 1 {
+      if (in_tags && /^[[:space:]]+-[[:space:]]+/) {
+        v = $0
+        sub(/^[[:space:]]+-[[:space:]]+/, "", v)
+        sub(/[[:space:]]*$/, "", v)
+        v = strip_outer_quotes(v)
+        if (v != "") tags = (tags == "" ? v : tags "," v)
+        next
+      }
+      if (in_tags && /^[^[:space:]]/) { in_tags = 0 }
+
+      if (/^author:/) {
+        v = $0; sub(/^author:[[:space:]]*/, "", v)
+        sub(/[[:space:]]*$/, "", v)
+        author = strip_outer_quotes(v); next
+      }
+      if (/^tags:/) {
+        v = $0; sub(/^tags:[[:space:]]*/, "", v)
+        sub(/[[:space:]]*$/, "", v)
+        if (v ~ /^\[/) {
+          sub(/^\[/, "", v); sub(/\][[:space:]]*$/, "", v)
+          n = split(v, items, /,[[:space:]]*/)
+          for (i = 1; i <= n; i++) {
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", items[i])
+            items[i] = strip_outer_quotes(items[i])
+            if (items[i] != "") tags = (tags == "" ? items[i] : tags "," items[i])
+          }
+        } else {
+          in_tags = 1
+        }
+        next
+      }
+    }
+    END { printf "%s\t%s\n", author, tags }
+  ' "$file"
+}
+
+# Stage 1 (rg) is load-bearing per design §Q8 — Stage 2 (Obsidian CLI)
+# degrades silently when any check below fails. Returns 1 (no output) when
+# unavailable; otherwise echoes the binary path.
+detect_obsidian_bin() {
+  local bin=""
+  if command -v obsidian >/dev/null 2>&1; then
+    bin="obsidian"
+  elif [[ -x "/Applications/Obsidian.app/Contents/MacOS/obsidian-cli" ]]; then
+    bin="/Applications/Obsidian.app/Contents/MacOS/obsidian-cli"
+  else
+    return 1
+  fi
+  pgrep -x Obsidian >/dev/null 2>&1 || return 1
+  # Smoke via a real `search` probe — it exercises the actual Stage-2 code
+  # path. CLI-disabled prints free text ("Command line interface is not
+  # enabled..."), enabled prints JSON. Matching JSON validity instead of a
+  # specific error string is resilient to Obsidian wording drift (Codex
+  # Pass 2 SHOULD-FIX). Probe query is unlikely to match real content.
+  ( "$bin" search query="__kunskap_probe__" format=json limit=1 2>/dev/null ) \
+    | jq -e 'type' >/dev/null 2>&1 \
+    || return 1
+  printf '%s\n' "$bin"
+}
+
+# Best-effort: returns 1 with no output on any failure; caller falls back to
+# rg-only ranking. Per the Obsidian CLI docs, when CWD is a vault folder
+# Obsidian uses that vault by default — `cd "$vault"` is the targeting.
+# stderr is suppressed on the jq pipe because malformed Obsidian output is a
+# documented best-effort degradation, not a bug worth surfacing to users.
+run_obsidian_recall() {
+  local bin="$1" vault="$2" query="$3"
+  ( cd "$vault" && "$bin" search query="$query" format=json 2>/dev/null ) \
+    | jq -r 'if type=="array" then .[] | (if type=="object" then (.path // .file // empty) else . end) else empty end' 2>/dev/null \
+    || return 1
+}
+
+cmd_recall() {
+  local vault_flag="$GLOBAL_VAULT" author="" tag="" limit=20 format="text"
+  local query_tokens=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --vault)  require_value --vault  "${2-__MISSING__}"; vault_flag="$2"; shift 2 ;;
+      --author) require_value --author "${2-__MISSING__}"; author="$2";     shift 2 ;;
+      --tag)    require_value --tag    "${2-__MISSING__}"; tag="$2";        shift 2 ;;
+      --limit)  require_value --limit  "${2-__MISSING__}"; limit="$2";      shift 2 ;;
+      --format) require_value --format "${2-__MISSING__}"; format="$2";     shift 2 ;;
+      --) shift; while [[ $# -gt 0 ]]; do query_tokens+=("$1"); shift; done ;;
+      -*) die "recall: unknown flag: $1" ;;
+      *)  query_tokens+=("$1"); shift ;;
+    esac
+  done
+  # Multi-word queries: `kunskap recall machine learning` joins to "machine
+  # learning" — researchers naturally type unquoted phrases (Codex Pass 2
+  # SHOULD-FIX). Single-token queries pass through unchanged.
+  [[ ${#query_tokens[@]} -gt 0 ]] \
+    || die "recall: missing <query> (usage: kunskap recall <query> [--author X] [--tag Y] [--limit N] [--format text|json])"
+  local query="${query_tokens[*]}"
+  [[ "$format" == "text" || "$format" == "json" ]] || die "recall: --format must be text or json (got: $format)"
+  [[ "$limit" =~ ^[0-9]+$ && "$limit" -gt 0 ]] \
+    || die "recall: --limit must be a positive integer (got: $limit)"
+
+  local vault
+  vault="$(resolve_vault_flag_or_marker recall "$vault_flag")"
+  validate_vault "$vault"
+
+  # Self-state before external (P1 §5): vault error is actionable without
+  # the tooling.
+  command -v rg >/dev/null \
+    || die "recall: \`rg\` not on PATH; install ripgrep first (\`brew install ripgrep\` or apt-get install ripgrep)"
+  command -v jq >/dev/null \
+    || die "recall: \`jq\` not on PATH; install jq first"
+
+  # --fixed-strings keeps queries literal (so `kunskap recall "two-pass"`
+  # isn't parsed as a regex). rg's exit codes: 0 = matches found, 1 = no
+  # matches, 2+ = real failure (path unreadable, glob error, etc). Tolerate
+  # 1, surface 2+ — the silent `|| true` form would mask permission errors
+  # as "no hits" and erode user trust in Stage 1 (Codex Pass 1 BLOCK-SHIP).
+  local rg_raw rg_status=0
+  if rg_raw="$(rg --json --type md --fixed-strings --no-messages -- "$query" \
+                  "$vault/wiki" "$vault/raw/inbox" 2>/dev/null)"; then
+    rg_status=0
+  else
+    rg_status=$?
+  fi
+  [[ "$rg_status" -le 1 ]] \
+    || die "recall: rg failed with status $rg_status (check vault paths and read permissions on $vault/wiki and $vault/raw/inbox)"
+
+  local rg_hits
+  rg_hits="$(
+    printf '%s\n' "$rg_raw" \
+      | jq -c --arg prefix "$vault/" '
+          select(.type == "match")
+          | {
+              path: (
+                if (.data.path.text | startswith($prefix))
+                then .data.path.text[$prefix|length:]
+                else .data.path.text
+                end
+              ),
+              line: .data.line_number,
+              snippet: (.data.lines.text | sub("\n$"; ""))
+            }
+        '
+  )"
+
+  # Per-file frontmatter (bash 3.2 has no assoc arrays — emit JSONL, jq
+  # joins below). One awk fork per unique path.
+  local fm_jsonl
+  fm_jsonl="$(
+    printf '%s\n' "$rg_hits" | jq -r 'select(. != null) | .path' | sort -u \
+      | while IFS= read -r p; do
+          [[ -z "$p" ]] && continue
+          local meta a t
+          meta="$(read_recall_frontmatter "$vault/$p")"
+          a="${meta%%	*}"
+          t="${meta#*	}"
+          jq -nc --arg path "$p" --arg author "$a" --arg tags "$t" '
+            {
+              path: $path,
+              author: (if $author == "" then null else $author end),
+              tags:   (if $tags   == "" then []   else ($tags | split(",")) end)
+            }
+          '
+        done
+  )"
+
+  # Stage 2: Obsidian relevance ranks (best-effort).
+  local obs_jsonl="" obs_used=false
+  local obs_bin obs_paths
+  if obs_bin="$(detect_obsidian_bin)"; then
+    if obs_paths="$(run_obsidian_recall "$obs_bin" "$vault" "$query")"; then
+      obs_used=true
+      obs_jsonl="$(
+        idx=0
+        while IFS= read -r p; do
+          [[ -z "$p" ]] && continue
+          # Normalize Obsidian path to vault-relative POSIX (Codex Pass 2):
+          # strip absolute vault prefix, leading "./", convert backslashes.
+          # Without this, the join with rg paths in $omap silently drops
+          # under platform path-shape mismatch.
+          [[ "$p" == "$vault/"* ]] && p="${p#"$vault/"}"
+          [[ "$p" == ./* ]] && p="${p#./}"
+          p="${p//\\//}"
+          jq -nc --arg path "$p" --argjson rank "$idx" '{path: $path, obs_rank: $rank}'
+          idx=$((idx + 1))
+        done <<< "$obs_paths"
+      )"
+    fi
+  fi
+
+  local fm_array obs_array
+  if [[ -n "$fm_jsonl" ]];  then fm_array="$(printf  '%s' "$fm_jsonl"  | jq -cs '.')"; else fm_array='[]';  fi
+  if [[ -n "$obs_jsonl" ]]; then obs_array="$(printf '%s' "$obs_jsonl" | jq -cs '.')"; else obs_array='[]'; fi
+  local hits_json
+  hits_json="$(
+    printf '%s\n' "$rg_hits" \
+      | jq -s \
+          --argjson limit "$limit" \
+          --argjson obs_used "$obs_used" \
+          --arg author_filter "$author" \
+          --arg tag_filter "$tag" \
+          --argjson fm  "$fm_array" \
+          --argjson obs "$obs_array" '
+          ($fm  | map({(.path): {author, tags}})  | add // {}) as $fmap |
+          ($obs | map({(.path): .obs_rank})       | add // {}) as $omap |
+          (group_by(.path) | map({(.[0].path): length}) | add // {}) as $score |
+          map(
+            . as $hit
+            | (.path) as $p
+            | . + {
+                author: ($fmap[$p].author // null),
+                tags:   ($fmap[$p].tags   // []),
+                obs_rank: ($omap[$p] // null),
+                score: ($score[$p] // 0)
+              }
+          )
+          | map(
+              select(
+                ($author_filter == "" or .author == $author_filter)
+                and ($tag_filter == ""  or (.tags | index($tag_filter)) != null)
+              )
+            )
+          | sort_by(
+              (if $obs_used and .obs_rank != null then 0 else 1 end),
+              (.obs_rank // 99999),
+              (-.score),
+              .path,
+              .line
+            )
+          | .[:$limit]
+        '
+  )"
+
+  local hit_count
+  hit_count="$(printf '%s' "$hits_json" | jq 'length')"
+
+  if [[ "$format" == "json" ]]; then
+    printf '%s\n' "$hits_json" | jq '{hits: .}'
+  elif [[ "$hit_count" -eq 0 ]]; then
+    echo "kunskap: no hits for \"$query\" in $vault"
+  else
+    printf '%s\n' "$hits_json" | jq -r '
+      .[]
+      | "- \(.path):\(.line) (score \(.score)\(if .obs_rank != null then ", obs#\(.obs_rank+1)" else "" end))"
+        + (if (.tags|length) > 0 then " [\(.tags | join(", "))]" else "" end)
+        + "\n    \(.snippet | gsub("^\\s+|\\s+$"; ""))"
+    '
+  fi
+
+  [[ "$hit_count" -gt 0 ]] || return 1
+  return 0
+}
+
 main() {
   # Pre-dispatch globals are consumed only when they precede the first
   # non-flag token; subcommand-local `--vault` (curate, learn enable) is
@@ -1559,6 +1858,7 @@ main() {
     drafts)                   cmd_drafts "$@" ;;
     link-stubs)               cmd_link_stubs "$@" ;;
     audit-coverage)           cmd_audit_coverage "$@" ;;
+    recall)                   cmd_recall "$@" ;;
     *) die "unknown subcommand: $cmd (try \`kunskap help\`)" ;;
   esac
 }

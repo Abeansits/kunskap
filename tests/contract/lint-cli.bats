@@ -51,6 +51,16 @@ teardown() {
   [[ "$output" == *"_meta/kunskap.toml"* ]]
 }
 
+@test "lint --vault dies if wiki/ missing" {
+  empty="$(mktemp -d)"
+  mkdir -p "$empty/_meta" "$empty/raw/inbox"
+  echo "[vault]" > "$empty/_meta/kunskap.toml"
+  run "$KUNSKAP_BIN" lint --vault "$empty"
+  rm -rf "$empty"
+  [[ "$status" -ne 0 ]]
+  [[ "$output" == *"missing wiki/"* ]]
+}
+
 @test "lint --format only accepts text|json" {
   TMPVAULT="$(make_temp_vault)"
   run "$KUNSKAP_BIN" lint --vault "$TMPVAULT" --format yaml

@@ -1,0 +1,13 @@
+filters:
+  and:
+    - file.inFolder("wiki")
+    - 'last_curated != ""'
+views:
+  - type: table
+    name: "Recently curated"
+    limit: 50
+    order:
+      - file.name
+      - note.last_curated
+      - note.author
+      - note.source_count
