@@ -686,19 +686,19 @@ cmd_learn_status() {
 
   # Risk #5 (identity fragility) cross-check: if identity-string appears as a
   # role primary in any roles.toml section, status confirms; mismatch warns.
-  # "TBD" (the default in the v1.0+ roles.toml template) and empty are both
-  # treated as "primary not declared" — surface that as a separate semantic
-  # state so users don't think their identity failed a check that never ran.
+  # `read_role_primary` collapses literal "TBD" and unset to empty so the
+  # all-TBD vault gets surfaced as a distinct "no primary configured" state
+  # rather than masquerading as an identity-mismatch.
   local roles_file="$vault/_meta/roles.toml"
   if [[ -n "$identity" && -f "$roles_file" ]]; then
     local cur lin matched=""
-    cur="$(read_toml_field "$roles_file" roles.curator primary 2>/dev/null || true)"
-    lin="$(read_toml_field "$roles_file" roles.linter  primary 2>/dev/null || true)"
+    cur="$(read_role_primary "$vault" curator || true)"
+    lin="$(read_role_primary "$vault" linter  || true)"
     [[ "$cur" == "$identity" ]] && matched="$matched curator"
     [[ "$lin" == "$identity" ]] && matched="$matched linter"
     local cur_tbd="" lin_tbd=""
-    [[ -z "$cur" || "$cur" == "TBD" ]] && cur_tbd=1
-    [[ -z "$lin" || "$lin" == "TBD" ]] && lin_tbd=1
+    [[ -z "$cur" ]] && cur_tbd=1
+    [[ -z "$lin" ]] && lin_tbd=1
     if [[ -n "$cur_tbd" && -n "$lin_tbd" ]]; then
       echo "ROLE-CHECK: no primary configured (curator and linter primaries are TBD; edit _meta/roles.toml to declare)"
     elif [[ -n "$matched" && -n "$cur_tbd" ]]; then
