@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="1.0.0"
+VERSION="1.0.1"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/kunskap"
 IDENTITY_FILE="$CONFIG_DIR/identity.toml"
 
@@ -586,8 +586,44 @@ Report the curator's summary back when it returns."
   # Pass --add-dir explicitly AND cd into the vault before spawning so the
   # headless agent's filesystem sandbox covers the vault (P4 §2 finding —
   # sandbox is CWD-scoped; --plugin-dir + \$ARGUMENTS aren't enough).
+  #
+  # Permissions: --permission-mode dontAsk + --allowed-tools allow-list
+  # (v1.0.1 fix — canonical Claude Code docs §Permission modes). acceptEdits
+  # auto-approves Edit/Write + filesystem ops (mkdir/mv/cp) but NOT Bash git
+  # ops; in headless mode an unmatched git op falls through to the canUseTool
+  # callback that doesn't exist, hanging or aborting the run. dontAsk converts
+  # any unmatched tool into an explicit denial; the allow-list pre-approves
+  # the exact tools the curator agent prompt invokes — no broader.
+  #
+  # Curator allow-list rationale (each entry maps to a curator-agent op):
+  #   Read/Write/Edit/MultiEdit/Glob/Grep — file work + hand-edit detection.
+  #   Agent — directive prompt invokes the curator subagent via Agent tool.
+  #   Read-only git (status/diff/log/rev-parse/ls-files/check-ignore) — most
+  #     are auto-approved as built-in read-only forms of git, but explicit
+  #     allow rules insulate against future Claude Code changes + cover the
+  #     "unquoted glob promotes to prompt" edge per §Read-only commands.
+  #   Write git (add/commit/mv/rm) — MUST 1 atomic per-article commits.
+  #   Both `git foo` and `git -C <vault> foo` forms — agent prompts in
+  #     agents/curator.md use the -C form; cd-into-vault context permits
+  #     the bare form. Allow both so neither shape prompts.
+  #   mkdir/jq/date — `mkdir -p _meta/last-run` + `jq -n ... > curator.json`
+  #     + `date -u +...` per the run-record recipe in agents/curator.md §Run
+  #     shape step 6.
+  #   grep/sort/uniq — stub-discovery pipeline `grep -roh '\[\[' | sort |
+  #     uniq -c | sort -rn` per agents/curator.md §Wikilinks. Pipe operators
+  #     split into independent subcommands; each needs its own allow rule.
+  #   kunskap — preferred alternative `kunskap link-stubs --vault $V --format
+  #     json` for the stub-discovery recipe.
+  #   No git push, no Bash(*) — push is the SessionEnd hook's job (P2);
+  #     Bash(*) would be bypass-equivalent for shell ops.
+  local curator_tools="Read,Write,Edit,MultiEdit,Glob,Grep,Agent"
+  curator_tools+=",Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git rev-parse:*),Bash(git ls-files:*),Bash(git check-ignore:*)"
+  curator_tools+=",Bash(git -C * status:*),Bash(git -C * diff:*),Bash(git -C * log:*),Bash(git -C * rev-parse:*),Bash(git -C * ls-files:*),Bash(git -C * check-ignore:*)"
+  curator_tools+=",Bash(git add:*),Bash(git commit:*),Bash(git mv:*),Bash(git rm:*)"
+  curator_tools+=",Bash(git -C * add:*),Bash(git -C * commit:*),Bash(git -C * mv:*),Bash(git -C * rm:*)"
+  curator_tools+=",Bash(mkdir:*),Bash(jq:*),Bash(tee:*),Bash(date:*),Bash(grep:*),Bash(sort:*),Bash(uniq:*),Bash(kunskap:*)"
   cd "$vault"
-  exec claude --add-dir "$vault" --plugin-dir "$root" --permission-mode acceptEdits -p "$prompt"
+  exec claude --add-dir "$vault" --plugin-dir "$root" --allowed-tools "$curator_tools" --permission-mode dontAsk -p "$prompt"
 }
 
 cmd_lint() {
@@ -658,6 +694,8 @@ After the audit, instruct the linter to record the run by writing \`_meta/last-r
   findings_count: <integer count of findings emitted>
   forced: $forced_json
 
+IMPORTANT — bash redirect workaround (v1.0.1 empirical finding): the linter agent's frontmatter disallows the Write/Edit tools (read-only invariant defense in depth), so the run-record write must go through Bash. The headless permission engine does NOT match per-tool rules like \`Bash(jq:*)\` against commands containing \`>\` shell redirection (the redirect operator becomes a separate tool-input field that defeats prefix matching). Use the \`tee\` form instead — \`jq -n ... | tee \$VAULT/_meta/last-run/linter.json\` — which the engine parses as two pipe-split subcommands that each match their own allow-rule. Stdout duplication from \`tee\` is harmless (it goes to the agent's tool result, not the user-facing findings stream).
+
 Do NOT attempt the audit yourself; the linter subagent must own it. Do NOT write any path other than \`_meta/last-run/linter.json\` — the CLI invariant check will fail the run if the linter touches anything else (including _meta/last-run/curator.json). Do not modify this plugin repo. Report the linter's audit output verbatim (the run-record commit is metadata, not part of the findings stdout)."
 
   # CWD fix (P4 §2): cd into the vault before spawning so the headless
@@ -665,8 +703,40 @@ Do NOT attempt the audit yourself; the linter subagent must own it. Do NOT write
   # suspenders for the same reason — Claude Code 1.x supports it.
   # Capture exit code WITHOUT `if !` — the negated form sets $? to 0 (the
   # status of `!` itself), losing the real claude failure code (P4 §1).
+  #
+  # Permissions: same shape as cmd_curate's allow-list (v1.0.1 fix), but
+  # TIGHTER to reflect the linter's read-only invariant (MUST 8). Differences:
+  #   - No Edit/MultiEdit — linter never modifies existing files.
+  #   - Write is in the parent allow-list but the linter agent's frontmatter
+  #     `disallowedTools: Write, Edit` denies it for the linter subagent
+  #     specifically (read-only invariant defense in depth at the agent
+  #     contract layer; tests/contract/linter-static-prompt.bats locks this).
+  #     The run-record write therefore must go through Bash. The directive
+  #     prompt above instructs the agent to use `jq -n ... | tee <path>`
+  #     because the headless permission engine does NOT match per-tool rules
+  #     like `Bash(jq:*)` against commands with `>` shell redirection (v1.0.1
+  #     empirical finding — `>` becomes a separate tool-input field that
+  #     defeats prefix matching). The pipe `|` is a documented command
+  #     separator, so each subcommand matches its own allow-rule cleanly.
+  #     `Bash(tee:*)` below is what makes the recipe work end-to-end.
+  #   - The CLI authoritative invariant check (status_before/after + HEAD
+  #     oid + log --name-only enumeration, P4 §3) is the trust boundary that
+  #     catches any other-path write — the allow-list is defense in depth.
+  #   - git mutation rules narrowed: per-path `Bash(git add _meta/last-run/
+  #     linter.json)` exact match, plus `Bash(git commit:*)` for the run-
+  #     record commit. Per-path `git add` enforces the read-only contract at
+  #     the permissions layer too; the broader `git commit:*` is unavoidable
+  #     since commit-message shell quoting is fragile to constrain (the CLI
+  #     invariant check catches any commit that touches non-whitelisted
+  #     paths regardless).
+  local linter_tools="Read,Write,Glob,Grep,Agent"
+  linter_tools+=",Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git rev-parse:*),Bash(git ls-files:*)"
+  linter_tools+=",Bash(git -C * status:*),Bash(git -C * diff:*),Bash(git -C * log:*),Bash(git -C * rev-parse:*),Bash(git -C * ls-files:*)"
+  linter_tools+=",Bash(git add _meta/last-run/linter.json),Bash(git -C * add _meta/last-run/linter.json)"
+  linter_tools+=",Bash(git commit:*),Bash(git -C * commit:*)"
+  linter_tools+=",Bash(mkdir:*),Bash(jq:*),Bash(tee:*),Bash(date:*),Bash(grep:*),Bash(sort:*),Bash(uniq:*),Bash(kunskap:*)"
   local agent_out agent_status
-  if agent_out="$( cd "$vault" && claude --add-dir "$vault" --plugin-dir "$root" --permission-mode acceptEdits -p "$prompt" )"; then
+  if agent_out="$( cd "$vault" && claude --add-dir "$vault" --plugin-dir "$root" --allowed-tools "$linter_tools" --permission-mode dontAsk -p "$prompt" )"; then
     agent_status=0
   else
     agent_status=$?
