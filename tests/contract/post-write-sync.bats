@@ -184,6 +184,31 @@ EOF
   rm -rf "$vault"
 }
 
+@test "post-write-sync: marker vault with trailing slash still matches inbox writes" {
+  bare="$(mktemp -d -t kunskap-bare.XXXXXX)"
+  make_bare_remote "$bare"
+  vault="$(mktemp -d -t kunskap-vault.XXXXXX)"
+  make_shared_vault "$vault" "$bare"
+  ( cd "$vault" && git push -q -u origin HEAD:main )
+  # Hand-write a marker with a trailing slash on the vault path —
+  # simulates a user who passed `--vault /some/path/` (or a legacy marker
+  # written before vault-path canonicalization landed).
+  set_identity
+  mkdir -p "$TMPPROJ/.claude"
+  cat > "$TMPPROJ/.claude/kunskap.json" <<EOF
+{"vault": "$vault/", "enabled": true, "confirmed_at": "2026-05-06T00:00:00Z"}
+EOF
+
+  note="$vault/raw/inbox/learning-trailing-slash.md"
+  echo "body" > "$note"
+  payload="$(jq -n --arg p "$note" '{tool_input:{file_path:$p, content:"x"}}')"
+  run run_hook "$payload"
+
+  [[ "$status" -eq 0 ]]
+  ( cd "$vault" && git log --oneline | head -1 ) | grep -Fq 'kunskap: inbox capture (auto'
+  rm -rf "$vault" "$bare"
+}
+
 @test "post-write-sync: malformed stdin → exit 0 no-op (no commit)" {
   vault="$(mktemp -d -t kunskap-vault.XXXXXX)"
   make_shared_vault "$vault"

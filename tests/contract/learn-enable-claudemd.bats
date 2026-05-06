@@ -57,7 +57,7 @@ EOF
   cd "$TMPPROJ"
   KUNSKAP_AUTO_CONFIRM=1 "$KUNSKAP_BIN" learn enable --vault "$vault"
   grep -Fq '## Recall' "$(claudemd)"
-  grep -Fq 'At the start of every new task, run' "$(claudemd)"
+  grep -Fq 'your first action is to run `/kunskap:recall' "$(claudemd)"
 }
 
 @test "learn enable is idempotent — re-enable doesn't duplicate the block" {
@@ -139,6 +139,35 @@ EOF
   run "$KUNSKAP_BIN" learn disable
   [[ "$status" -ne 0 ]]
   [[ "$output" == *"lacks fingerprint"* ]]
+}
+
+@test "learn enable refuses on garbled markers (missing END would drop user content)" {
+  cd "$TMPPROJ"
+  cat > "$(claudemd)" <<'EOF'
+# Project
+
+<!-- BEGIN kunskap (managed) -->
+body without an end marker
+
+User content that would be silently dropped on naive replacement.
+EOF
+  run bash -c "KUNSKAP_AUTO_CONFIRM=1 '$KUNSKAP_BIN' learn enable --vault '$vault'"
+  [[ "$status" -ne 0 ]]
+  [[ "$output" == *"malformed managed-block markers"* ]]
+  grep -Fq 'User content that would be silently dropped' "$(claudemd)"
+}
+
+@test "learn enable refuses on duplicated BEGIN markers (would duplicate the block)" {
+  cd "$TMPPROJ"
+  cat > "$(claudemd)" <<'EOF'
+<!-- BEGIN kunskap (managed) -->
+<!-- BEGIN kunskap (managed) -->
+body
+<!-- END kunskap (managed) -->
+EOF
+  run bash -c "KUNSKAP_AUTO_CONFIRM=1 '$KUNSKAP_BIN' learn enable --vault '$vault'"
+  [[ "$status" -ne 0 ]]
+  [[ "$output" == *"malformed managed-block markers"* ]]
 }
 
 @test "learn disable on a project with no CLAUDE.md still removes the marker" {

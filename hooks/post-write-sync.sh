@@ -43,8 +43,12 @@ esac
 
 # Cheap inbox-prefix filter against the marker's vault path. Skips the
 # expensive identity / shared / rebase checks for the 99% non-inbox case.
+# Strip trailing slash from the marker value so a vault written as
+# `/path/` produces `/path/raw/inbox/...` rather than `/path//raw/inbox`,
+# which would silently miss canonical `file_path` strings from the agent.
 vault_from_marker="$(jq -r '.vault // empty' "$marker" 2>/dev/null || true)"
 [[ -n "$vault_from_marker" ]] || exit 0
+vault_from_marker="${vault_from_marker%/}"
 inbox="$vault_from_marker/raw/inbox"
 case "$file_path" in
   "$inbox"/*) ;;

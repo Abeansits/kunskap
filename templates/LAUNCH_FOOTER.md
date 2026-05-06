@@ -6,12 +6,9 @@ The vault path is set in `.claude/kunskap.json` for this project. Use `/kunskap:
 
 ### Pre-flight (required)
 
-Before writing any code on a non-trivial task, search the vault for prior art on the area you're about to touch. Examples:
+At task start (before writing code or making a plan), your first action is to run `/kunskap:recall <keywords>` against the goal — pick 2–3 keywords from the user's request — and briefly note the top 1–3 relevant hits before proceeding. If nothing relevant comes back, say "recall: no prior art" and proceed. If a hit contradicts your plan, surface the conflict before continuing. Skip only when the task is trivial (greetings, time queries, single-line tweaks).
 
-- `/kunskap:recall <keywords>` — runs `rg --type md` over `wiki/` + `raw/inbox/` (Stage 1) and reranks via the Obsidian CLI when available (Stage 2).
-- Fallback if the slash command is unavailable: `grep -ri <keyword> <vault>/wiki/`
-
-Read the top 1–3 hits. If a prior learning applies, follow it; if it contradicts your plan, surface the conflict before proceeding. Skip when the task is trivial (greetings, time queries, single-line tweaks).
+Fallback if the slash command is unavailable: `grep -ri <keyword> <vault>/wiki/`.
 
 ### Tool selection
 

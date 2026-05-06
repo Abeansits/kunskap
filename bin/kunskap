@@ -408,7 +408,7 @@ render_claudemd_body() {
 
 ## Recall
 
-At the start of every new task, run `/kunskap:recall <keywords>` to surface prior learnings + research relevant to the goal. Incorporate matches before proceeding. Skip when the task is trivial (greetings, time queries, single-line tweaks).
+At task start (before writing code or making a plan), your first action is to run `/kunskap:recall <keywords>` against the goal — pick 2–3 keywords from the user's request — and briefly note the top 1–3 relevant hits before proceeding. If nothing relevant comes back, say "recall: no prior art" and proceed. Skip only when the task is trivial (greetings, time queries, single-line tweaks).
 EOF
 }
 
@@ -440,6 +440,16 @@ inject_claudemd() {
   out="$(mktemp -t kunskap-claudemd.XXXXXX)"
 
   if [[ -f "$file" ]] && grep -Fq '<!-- BEGIN kunskap (managed) -->' "$file"; then
+    # Refuse on garbled markers: nested BEGIN duplicates the block on
+    # replacement, and a missing END would drop all trailing user content
+    # because awk's in_block flag would never flip off.
+    local n_begin n_end
+    n_begin=$(grep -Fc '<!-- BEGIN kunskap (managed) -->' "$file" 2>/dev/null || echo 0)
+    n_end=$(grep -Fc '<!-- END kunskap (managed) -->' "$file" 2>/dev/null || echo 0)
+    if [[ "$n_begin" != "1" || "$n_end" != "1" ]]; then
+      rm -f "$block_file" "$out"
+      die "learn enable: $file has malformed managed-block markers (BEGIN=$n_begin, END=$n_end; expected 1 each). Repair manually before re-enabling."
+    fi
     # Replace block in place. awk swaps the BEGIN/body/END region for the
     # contents of $block_file; surrounding lines pass through untouched.
     awk -v new_block_file="$block_file" '
@@ -534,6 +544,9 @@ cmd_learn_enable() {
   done
   [[ -n "$vault" ]] || die "learn enable: --vault <abs-path> is required"
   [[ ${#extra[@]} -eq 0 ]] || die "learn enable: unknown extra args: ${extra[*]}"
+  # Strip trailing slash so the marker is canonical; avoids `/path//raw/inbox`
+  # downstream when the hook builds the inbox-prefix string.
+  vault="${vault%/}"
   validate_vault_loose "$vault"
 
   # Risk #7 (vault-leak between projects) mitigation. The marker file is the
