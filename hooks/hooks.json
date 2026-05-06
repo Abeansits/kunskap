@@ -1,5 +1,5 @@
 {
-  "description": "Kunskap session sync. Pull shared vault on session start; commit + push inbox capture on session end. No-op in projects without .claude/kunskap.json.",
+  "description": "Kunskap session sync. Pull shared vault on session start; commit + push inbox writes asynchronously per-write. No-op in projects without .claude/kunskap.json.",
   "hooks": {
     "SessionStart": [
       {
@@ -12,13 +12,14 @@
         ]
       }
     ],
-    "SessionEnd": [
+    "PostToolUse": [
       {
-        "matcher": "*",
+        "matcher": "Write|Edit",
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/session-end.sh"
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/post-write-sync.sh",
+            "async": true
           }
         ]
       }
