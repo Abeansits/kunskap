@@ -66,14 +66,14 @@ Output: `[DRAFT-STALE] wiki/_drafts/<file>.md | created Nd ago, awaiting human t
 Read `_meta/last-run/curator.json` if it exists (sharded per-role under `_meta/last-run/`; design §Q4 — preserves the "no shared file" invariant under multi-actor runs). The shape:
 
 ```json
-{ "ran_at": "2026-05-03T...", "by": "sebastian@laptop", ... }
+{ "ran_at": "2026-05-03T...", "by": "alice@laptop", ... }
 ```
 
 For every inbox note in `raw/inbox/*.md` AND every archived note in `Archives/processed-inbox/*.md`, parse the frontmatter `author:` field. If a note's `author:` does **not** equal the identity in `_meta/last-run/curator.json#by`, AND the note's `created:` is **≥ 48 hours** before the curator's `ran_at`, AND the note's `created:` is within the last **14 days** (recent enough to plausibly be an offline-arrival rather than pre-curator-era backlog), emit `[OFFLINE-ARRIVAL]`.
 
 The 14-day upper bound matters on a brand-new shared vault that imports historical archives: without it, every pre-existing inbox note from an author other than the first curator would be flagged as `[OFFLINE-ARRIVAL]`. The intent of MUST 4 is "did this contributor write WHILE the curator ran without them" — backlog from before the curator existed isn't an offline arrival.
 
-This is the load-bearing check for Risk #4 (Matt-offline-for-a-week): inbox notes from authors not seen in `_meta/last-run/curator.json` for ≥48h pile up while the curator runs against a stale view.
+This is the load-bearing check for Risk #4 (offline-contributor-for-a-week): inbox notes from authors not seen in `_meta/last-run/curator.json` for ≥48h pile up while the curator runs against a stale view.
 
 Output: `[OFFLINE-ARRIVAL] raw/inbox/<file>.md | author <name>@<host> not seen in last curator run; bias next curator pass to re-read related articles. Suggested action: re-run /kunskap:curate.`
 
@@ -181,6 +181,6 @@ If anything goes wrong mid-loop, exit non-zero with a clear stderr message. Part
 
 ## Why this contract matters
 
-The curator (P1) writes the wiki; without you, drift accumulates silently. After three months of curator runs by three humans across three machines, the wiki will have inconsistencies, stale drafts, missing connections. You are the safety net — manual now (P4), GH-Actions cron-ready later (v2). Risk #4 (Matt-offline-for-a-week) is the load-bearing scenario: if Matt's notes pile up while he's offline and the curator runs all week without them, his contributions get curated in isolation. The `[OFFLINE-ARRIVAL]` finding is what catches this.
+The curator (P1) writes the wiki; without you, drift accumulates silently. After three months of curator runs by multiple humans across multiple machines, the wiki will have inconsistencies, stale drafts, missing connections. You are the safety net — manual now (P4), GH-Actions cron-ready later (v2). Risk #4 (offline-contributor-for-a-week) is the load-bearing scenario: if a contributor's notes pile up while they're offline and the curator runs all week without them, their contributions get curated in isolation. The `[OFFLINE-ARRIVAL]` finding is what catches this.
 
 The read-only invariant is your discipline anchor. If you ever write, the contract collapses and the curator and you become indistinguishable. Don't blur the boundary.

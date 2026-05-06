@@ -1,10 +1,15 @@
 # Kunskap
 
-Knowledge-base plugin for Claude Code. Sessions write loose notes into an inbox; a librarian agent compiles them into prose articles with `[[wikilinks]]` and `## Sources` provenance — Karpathy's compile model, distributed as a Claude Code Skill (omarsar0). Sibling to Vigil / Sigil / Ting.
+[![CI](https://github.com/Abeansits/kunskap/actions/workflows/p6.yml/badge.svg)](https://github.com/Abeansits/kunskap/actions)
+[![Latest release](https://img.shields.io/github/v/release/Abeansits/kunskap?display_name=tag)](https://github.com/Abeansits/kunskap/releases)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Claude Code Plugin](https://img.shields.io/badge/Claude%20Code-Plugin-blueviolet.svg)](https://docs.claude.com/en/docs/claude-code/plugins)
+
+Knowledge-base plugin for Claude Code. Sessions write loose notes into an inbox; a librarian agent compiles them into prose articles with `[[wikilinks]]` and `## Sources` provenance — Karpathy's compile model, packaged as a Claude Code plugin. Sibling to Vigil / Sigil / Ting.
 
 ## Status
 
-**v1.0.0 — multiplayer-safe, marketplace-installable, search-enabled.** Sebastian, Paul, and Matt can clone the marketplace, install the plugin, run `kunskap init` on a shared research vault, and start using it. The phased rollout (P0 → P6) shipped on schedule; the design lives at [`docs/kunskap-design.md`](docs/kunskap-design.md).
+**v1.0.0 — multiplayer-safe, marketplace-installable, search-enabled.** A small team can clone the marketplace, install the plugin, run `kunskap init` on a shared vault, and start using it. The phased rollout (P0 → P6) shipped on schedule; the design lives at [`docs/kunskap-design.md`](docs/kunskap-design.md).
 
 Post-v1.0 work (cron / GitHub Actions, settings UI, search v2 with embeddings) is driven by real-usage findings, not speculative roadmaps — see the design's §Open decisions for the current deferral list.
 
@@ -21,7 +26,7 @@ Then per machine, configure your identity (one-time):
 kunskap config user --name <yourslug-lowercase> --host <stable-host-name>
 ```
 
-`--name` is lowercase to pre-empt `Paul`/`paul` collisions in the role check; `--host` should be set explicitly (don't rely on `hostname -s` — machine renames silently break role checks; see Risk #5).
+`--name` is lowercase because the role-assignment key is case-sensitive (so `Foo`/`foo` would silently miss the role check); `--host` should be set explicitly (don't rely on `hostname -s` — machine renames silently break role checks; see Risk #5).
 
 Verify:
 
@@ -30,7 +35,23 @@ kunskap whoami
 # → yourslug@stable-host-name
 ```
 
+## Per-project opt-in
+
+Kunskap fires only in projects you've opted in. Running `/kunskap:learn enable --vault <path>` writes a `.claude/kunskap.json` marker to the project; without that marker, the plugin's hooks no-op silently and the `kunskap-vault` skill doesn't auto-load. The marker carries the absolute vault path, an `enabled: true` flag, and a `confirmed_at` timestamp.
+
+Multiple projects can point at the same vault — common when a team has one research vault and several code repos that contribute to it. The vault path is unconstrained: you choose where on disk it lives. `/kunskap:learn status` prints the resolved vault and stamp age, and warns when the confirmation is >30 days old as a privacy nudge (Risk #7).
+
 ## The three core flows
+
+```mermaid
+flowchart LR
+  S[sessions] -->|1. capture| I[(raw/inbox)]
+  I -->|2. curate| W[wiki articles]
+  I -->|2. curate| D[wiki/_drafts]
+  D -->|/kunskap:drafts<br/>triage| W
+  W -->|3. recall| Q[/kunskap:recall<br/>rg + Obsidian/]
+  W -->|audit| L[/kunskap:lint<br/>findings/]
+```
 
 ### 1. Capture — sessions write inbox notes
 
@@ -95,15 +116,19 @@ Findings: drift across articles, stub clusters, draft staleness (≥7d), offline
 
 `recall` is identity-independent — works on any machine regardless of role.
 
-## Roles + hand-off
+## Roles (multiplayer)
 
-The curator and linter run only on their designated machine. Check primaries:
+The curator and linter run only on their designated machine, so a small team can use one shared vault without races. Roles are **static config**, not dynamic locks: `<vault>/_meta/roles.toml` is hand-edited, committed, and pushed; whoever pulls latest sees the new primaries. (An earlier design tried in-vault advisory locks acquired by commit-and-push — pass-2 review found a TOCTOU race that wedged the vault mid-rebase, so locks were dropped — see design §Q4.)
+
+Solo and pre-handoff vaults work without roles configured: a freshly-init'd vault carries `primary = "TBD"` for both roles, and the CLI warns + proceeds.
+
+Check primaries:
 
 ```
 cat <vault>/_meta/roles.toml
 ```
 
-Hand off to a teammate:
+Hand off (anyone on the team can do this — it's a git commit, not a server call):
 
 ```
 vim <vault>/_meta/roles.toml          # change roles.<role>.primary
@@ -111,14 +136,14 @@ git -C <vault> commit -am "<role>: hand off to <name>"
 git -C <vault> push
 ```
 
-Override a single run:
+Override a single run (with audit trail):
 
 ```
 kunskap curate --vault <vault> --force --yes
 kunskap lint   --vault <vault> --force --yes
 ```
 
-`--force` runs are recorded with `forced: true` in `_meta/last-run/<role>.json` for audit. A freshly-init'd vault carries `primary = "TBD"` for both roles — that warns and proceeds (solo workflows and pre-handoff teams need to work without role config).
+`--force` runs are recorded with `forced: true` in `_meta/last-run/<role>.json`.
 
 ## Risks worth surfacing
 
@@ -143,10 +168,6 @@ Full design: [`docs/kunskap-design.md`](docs/kunskap-design.md). v1.0 is the end
 | **P4** | Linter agent + health checks. Read-only contract. |
 | **P5** | Single-primary role assignment + sharded `_meta/last-run/{curator,linter}.json` + headless-agent CWD fix. |
 | **P6 (this release)** | Search (`kunskap recall`) + Obsidian Bases starters + marketplace listing + README polish. |
-
-## Lessons from real usage
-
-_Real-usage notes will land here after Sebastian, Paul, and Matt run v1.0 against an actual shared research vault for a few weeks. v1.0 ships with smoke-test coverage against `~/.vigil-vault` (the v0 librarian recipe vault) but not yet with multi-author production findings._
 
 ## License
 
