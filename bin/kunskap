@@ -225,10 +225,18 @@ check_role() {
 
 # Count uncommitted inbox notes in a vault. Echoes a bare integer (0 if the
 # inbox is clean or the vault isn't a git repo).
+#
+# `--untracked-files=all` is load-bearing: without it, git collapses an
+# untracked directory into a single `?? raw/inbox/` line (instead of one
+# line per file under it), and the count would be off whenever raw/inbox
+# itself wasn't already tracked. Real `kunskap init` vaults have a
+# .gitkeep so the dir is tracked, but defending against degenerate scaffolds
+# is cheap and matches the CI invariant.
 count_uncommitted_inbox() {
   local vault="$1"
   [[ -d "$vault/.git" && -d "$vault/raw/inbox" ]] || { echo 0; return; }
-  git -C "$vault" status --porcelain -- raw/inbox 2>/dev/null | grep -c . || true
+  git -C "$vault" status --porcelain --untracked-files=all -- raw/inbox 2>/dev/null \
+    | grep -c . || true
 }
 
 # Mid-rebase / merge / cherry-pick guard. Refuse if the vault is in a git
