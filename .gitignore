@@ -11,3 +11,6 @@
 /tmp/
 /.tmp/
 *.log
+
+# session-local artifacts
+/.claude/

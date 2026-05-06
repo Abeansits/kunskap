@@ -25,28 +25,30 @@ jobs:
 
       - name: shellcheck bin/kunskap + hooks
         run: |
-          shellcheck -e SC1090,SC1091 bin/kunskap hooks/session-start.sh hooks/session-end.sh
+          shellcheck -e SC1090,SC1091 bin/kunskap hooks/session-start.sh hooks/post-write-sync.sh
           shellcheck hooks/_shared.sh
 
       - name: hooks scripts are executable
         run: |
           test -x hooks/session-start.sh
-          test -x hooks/session-end.sh
+          test -x hooks/post-write-sync.sh
 
       # ---------- hooks.json shape (no public JSON-schema; jq+structural) ----------
 
       - name: hooks/hooks.json parses
         run: jq empty hooks/hooks.json
 
-      - name: hooks.json declares SessionStart and SessionEnd entries
+      - name: hooks.json declares SessionStart and PostToolUse entries (v1.1)
         run: |
-          jq -e '.hooks.SessionStart and .hooks.SessionEnd' hooks/hooks.json
+          jq -e '.hooks.SessionStart and .hooks.PostToolUse' hooks/hooks.json
           jq -e '.hooks.SessionStart | type == "array" and length >= 1' hooks/hooks.json
-          jq -e '.hooks.SessionEnd   | type == "array" and length >= 1' hooks/hooks.json
+          jq -e '.hooks.PostToolUse  | type == "array" and length >= 1' hooks/hooks.json
+          # SessionEnd was removed at v1.1 (replaced by per-write PostToolUse).
+          jq -e '.hooks.SessionEnd | not' hooks/hooks.json
 
       - name: hooks.json entries point at command-type hooks under \${CLAUDE_PLUGIN_ROOT}
         run: |
-          for ev in SessionStart SessionEnd; do
+          for ev in SessionStart PostToolUse; do
             jq -e ".hooks.${ev}[0].matcher | type == \"string\""        hooks/hooks.json
             jq -e ".hooks.${ev}[0].hooks   | length >= 1"               hooks/hooks.json
             jq -e ".hooks.${ev}[0].hooks[0].type == \"command\""        hooks/hooks.json
@@ -55,9 +57,18 @@ jobs:
               || { echo "${ev} command does not reference \${CLAUDE_PLUGIN_ROOT}: $cmd"; exit 1; }
           done
 
+      - name: "PostToolUse hook is configured async (v1.1 — never block the agentic loop)"
+        run: jq -e '.hooks.PostToolUse[0].hooks[0].async == true' hooks/hooks.json
+
+      - name: PostToolUse matcher is Write|Edit (only file-write tools)
+        run: |
+          matcher=$(jq -r '.hooks.PostToolUse[0].matcher' hooks/hooks.json)
+          [[ "$matcher" == "Write|Edit" ]] \
+            || { echo "PostToolUse matcher drifted: $matcher (expected Write|Edit)"; exit 1; }
+
       - name: hook scripts referenced in hooks.json exist on disk
         run: |
-          for ev in SessionStart SessionEnd; do
+          for ev in SessionStart PostToolUse; do
             cmd=$(jq -r ".hooks.${ev}[0].hooks[0].command" hooks/hooks.json)
             rel="${cmd//\$\{CLAUDE_PLUGIN_ROOT\}\//}"
             [[ -f "$rel" ]] || { echo "missing referenced script: $rel"; exit 1; }

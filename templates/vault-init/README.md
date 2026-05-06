@@ -13,8 +13,8 @@ This is a Kunskap-managed knowledge vault. The contract:
 
 Then sessions in that project will:
 - pull the vault on session start (shared vaults only)
-- get the kunskap-vault skill auto-loaded (vault-search-first discipline)
-- commit + push your inbox capture on session end (shared vaults only)
+- get capture + recall conventions injected into the project's `CLAUDE.md` (managed block; cleanly removed by `/kunskap:learn disable`)
+- commit + push each inbox write asynchronously via the PostToolUse hook (shared vaults only); use `/kunskap:sync` to retry or flush manually
 
 ## Roles
 
@@ -35,4 +35,4 @@ To triage drafts the curator routed to `wiki/_drafts/`:
 If `shared = true` in `_meta/kunskap.toml`, this vault is intended for the team
 sharing the configured git remote. **Don't push it to public remotes.** Don't
 paste contents into public-AI surfaces. If `shared = false`, pushes are
-disabled by the SessionEnd hook — it's a personal vault.
+disabled by the sync hooks — it's a personal vault.

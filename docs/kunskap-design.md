@@ -1,7 +1,8 @@
 ---
 title: Kunskap — Technical Design (v1)
 created: 2026-05-04
-status: shipped (v1.0; this doc captures the design as locked at P0)
+updated: 2026-05-06
+status: shipped (v1.1; this doc captures the design as locked at P0, with v1.1 deltas inline)
 lineage: sibling to Vigil / Sigil / Ting
 ---
 
@@ -18,12 +19,13 @@ From `state.json#kunskap_project.design_decisions_locked` + the contract docs. T
 1. **Name + family.** Kunskap (Swedish, "knowledge"). Sibling to Vigil/Sigil/Ting.
 2. **Three-repo split.** `<personal-vault>/` (solo, stays) + `kunskap/` (content-free plugin, public-ish) + `<team-vault>/` (private vault, the team).
 3. **Architecture per Karpathy.** `raw/inbox/` → LLM-compiled wiki of prose articles with `[[wikilinks]]` + `## Sources` provenance. Not bullet-lists. LLM owns the wiki; humans read.
-4. **Distribution per omarsar0.** Claude Code Skill model; auto-load by description.
+4. **Distribution = plugin + CLAUDE.md injection.** v1.0 shipped a `kunskap-vault` Skill that was meant to auto-load by description; in practice that proved unreliable. v1.1 replaces it with a managed block injected into the project's `CLAUDE.md` at `learn enable` time — always-on, project-scoped, conductor-independent.
 5. **Search v1 = `rg` + Obsidian CLI + Bases.** No custom RAG, embeddings, or vector DB.
 6. **Multiplayer.** Single librarian writes `wiki/`; everyone writes only to `raw/inbox/`. Conflict-free by construction.
 7. **Privacy.** Per-project opt-in via `/kunskap:learn enable --vault <path>`. No prompts in unconfigured projects.
-8. **Sync.** SessionEnd hook git-pushes shared vaults only. Personal vaults never push.
+8. **Sync (v1.1).** `SessionStart` pulls the shared vault. `PostToolUse(Write|Edit)` commits + pushes inbox writes asynchronously per-write — closes the SIGKILL/SIGHUP loss window left by SessionEnd. Personal vaults never push.
 9. **Two librarian roles.** Curator (inbox→articles) + Linter (Karpathy "health checks").
+10. **Recall (v1.1).** Auto-recall at task start via the `CLAUDE.md` instruction. Closes the read-side of the value loop.
 
 **Out of scope for this design**: custom RAG / embeddings / vector DB; web/mobile UI; vault federation; public sharing of vault content; synthetic-data finetuning; real-time collab. Per-project opt-in is the privacy primitive; no other privacy mechanism ships in v1.
 
@@ -33,7 +35,7 @@ From `state.json#kunskap_project.design_decisions_locked` + the contract docs. T
 
 **Plugin is the deliverable; CLI ships *inside* it as `bin/kunskap`.** Per the canonical reference, `bin/` is auto-added to the Bash tool's PATH when the plugin is enabled — so one repo, two surfaces. Slash commands shell out to the same binary; humans can call it directly for manual ops.
 
-CLI-alone loses in-session integration (skills, hooks). Plugin-alone re-implements routing in three skills. Two repos = engineering tax. Reject all three.
+CLI-alone loses in-session integration (commands, hooks). Plugin-alone re-implements routing in three places. Two repos = engineering tax. Reject all three.
 
 **Contract for contributors**: contributing requires Claude Code + the Kunskap plugin. Reading the vault requires only Obsidian — the wiki is plain markdown.
 
@@ -47,26 +49,24 @@ CLI-alone loses in-session integration (skills, hooks). Plugin-alone re-implemen
 kunskap/                                       # repo root (public-ish, content-free)
 ├── .claude-plugin/
 │   └── plugin.json                            # required: name="kunskap"; version, description, author, repo, license
-├── skills/
-│   └── kunskap-vault/
-│       └── SKILL.md                           # the auto-loaded "you're in a Kunskap vault" skill (description-triggered)
-├── commands/                                  # user-typed slash commands (legacy flat-MD form, still supported)
+├── commands/                                  # user-typed slash commands
 │   ├── learn.md                               # /kunskap:learn enable|disable|status
 │   ├── recall.md                              # /kunskap:recall <query> [--author X] [--tag Y]
 │   ├── curate.md                              # /kunskap:curate (manual librarian trigger)
 │   ├── drafts.md                              # /kunskap:drafts list|show|approve|reject|defer
-│   └── lint.md                                # /kunskap:lint (manual linter trigger)
+│   ├── lint.md                                # /kunskap:lint (manual linter trigger)
+│   └── sync.md                                # /kunskap:sync (manual inbox flush, v1.1)
 ├── agents/
 │   ├── curator.md                             # the librarian agent — invoked by /kunskap:curate or hook
 │   └── linter.md                              # the health-check agent — invoked by /kunskap:lint or hook
 ├── hooks/
-│   ├── hooks.json                             # SessionStart, SessionEnd, optional UserPromptSubmit (all opt-in gated)
+│   ├── hooks.json                             # SessionStart + PostToolUse(Write|Edit) (v1.1; all opt-in gated)
 │   ├── session-start.sh                       # git pull --rebase IF shared-vault marker present
-│   ├── session-end.sh                         # git add raw/inbox && commit && push, IF shared
+│   ├── post-write-sync.sh                     # async per-write inbox commit + push (v1.1)
 │   └── _shared.sh                             # helpers: detect-vault, no-op-if-disabled, identity-load
 ├── bin/
 │   └── kunskap                                # the CLI (bash for v1, escape hatch to Python only if needed)
-├── templates/                                 # consumed by `kunskap init`
+├── templates/                                 # consumed by `kunskap init` and `learn enable`
 │   ├── vault-init/                            # scaffolded into a new vault root
 │   │   ├── raw/inbox/.gitkeep
 │   │   ├── wiki/_index.md
@@ -79,7 +79,8 @@ kunskap/                                       # repo root (public-ish, content-
 │   │   ├── .gitignore
 │   │   └── README.md                          # one-page contributor doc, generated with vault name filled in
 │   ├── article.md                             # frontmatter + ## Sources stub (Karpathy compile output shape)
-│   └── inbox-note.md                          # frontmatter + entry stubs (LAUNCH_FOOTER conventions, lifted)
+│   ├── inbox-note.md                          # frontmatter + entry stubs (capture conventions, two example bodies)
+│   └── LAUNCH_FOOTER.md                       # canonical capture+recall conventions; injected into project CLAUDE.md by `learn enable` (v1.1)
 ├── docs/
 │   ├── README.md                              # project README, install + concepts
 │   ├── ARCHITECTURE.md                        # how the pieces fit (this doc, condensed, post-ship)
@@ -87,7 +88,7 @@ kunskap/                                       # repo root (public-ish, content-
 └── .gitignore
 ```
 
-**Mandatory:** `.claude-plugin/plugin.json`, `skills/kunskap-vault/SKILL.md`, `commands/learn.md`, `bin/kunskap`. Everything else is optional in the manifest sense (auto-discovery; absent dirs are simply skipped).
+**Mandatory:** `.claude-plugin/plugin.json`, `commands/learn.md`, `bin/kunskap`, `templates/LAUNCH_FOOTER.md` (read at `learn enable` time). Everything else is optional in the manifest sense (auto-discovery; absent dirs are simply skipped). v1.0's `skills/kunskap-vault/` was removed at v1.1 — auto-load-by-description proved unreliable; the CLAUDE.md injection covers the same role with deterministic visibility.
 
 **Pieces I considered and rejected:**
 - `.mcp.json`. Tempting to wire an obsidian MCP through here, but those servers are typically per-machine (user scope), not per-plugin. Don't double-wire. Skip.
@@ -250,9 +251,9 @@ host  = "laptop"                   # optional override; default = `hostname -s`
 
 ## Q6 — Hooks
 
-All hooks no-op when `.claude/kunskap.json` is missing in the project. That file is written by `/kunskap:learn enable` and contains `{"vault": "<absolute-path>", "enabled": true}`.
+All hooks no-op when `.claude/kunskap.json` is missing in the project. That file is written by `/kunskap:learn enable` and contains `{"vault": "<absolute-path>", "enabled": true, "confirmed_at": "<iso>"}`.
 
-### `hooks/hooks.json`
+### `hooks/hooks.json` (v1.1)
 
 Top-level `description` and per-handler `timeout` fields are intentionally absent — neither appears in any canonical example, and both are pending hands-on verification before adoption.
 
@@ -269,12 +270,13 @@ Top-level `description` and per-handler `timeout` fields are intentionally absen
         ]
       }
     ],
-    "SessionEnd": [
+    "PostToolUse": [
       {
-        "matcher": "*",
+        "matcher": "Write|Edit",
         "hooks": [
           { "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/session-end.sh"
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/post-write-sync.sh",
+            "async": true
           }
         ]
       }
@@ -283,11 +285,17 @@ Top-level `description` and per-handler `timeout` fields are intentionally absen
 }
 ```
 
-**SessionEnd matcher values** (per the canonical hooks reference): `clear`, `resume`, `logout`, `prompt_input_exit`, `bypass_permissions_disabled`, `other`. v1 uses `"*"` (fire on all of them); a v2 refinement could use `prompt_input_exit|other` to skip `clear` (which doesn't really mean session over) — defer until we observe noise.
+**v1.0 → v1.1 delta.** v1.0 wired a `SessionEnd` hook for the inbox push. v1.1 replaces it with `PostToolUse(Write|Edit)` set to `async: true`. The `PostToolUse` model:
 
-**Hook reliability is best-effort, not guaranteed.** The canonical reference is silent on whether `SessionEnd` fires on SIGKILL, whether Claude Code waits for the hook, and whether per-handler timeouts are enforced. The v0 SessionEnd contract elsewhere in this doc treats inbox sync as best-effort: if the hook doesn't fire (hard kill, OS forced shutdown), the inbox capture is in the local vault but unpushed. The next session-start `git pull --rebase` doesn't lose it; the next session-end pushes it. Document this clearly to users: **closing your laptop with a kunskap session running is fine; SIGKILL'ing the Claude Code process loses that session's inbox commit until next session-end**.
+- Fires on the canonical `tool_input.file_path`. The hook script filters by inbox-prefix (`<vault>/raw/inbox/`); writes outside the inbox are no-ops.
+- `async: true` (per Claude Code hooks reference) keeps the agent unblocked; the script additionally backgrounds the git work itself so even a Claude Code version that doesn't honour `async` can't block the loop.
+- Closes the v1.0 SIGKILL/SIGHUP loss window: where SessionEnd would silently drop the unpushed commit if the process died, per-write sync has already pushed every captured note by the time anything could go wrong.
+- Path traversal is rejected explicitly (`../`, `/..`) even when string-prefix would match — belt-and-braces with the prefix check.
+- Standard fail-soft contract: every error path exits 0 with a stderr message. Closing your laptop must not be blocked by a flaky vault.
 
-No `UserPromptSubmit` hook in v1. The temptation is to inject "search vault first" reminders, but that's exactly the kind of noise the v0 librarian session is testing whether the curator surfaces naturally. Hold for v2.
+The session-start `git pull --rebase --autostash` carries on as before. v1.1 also has it surface the count of any uncommitted inbox notes (rare but possible after a hard kill), nudging the user to `/kunskap:sync`.
+
+No `UserPromptSubmit` hook in v1.x. The temptation is to inject "search vault first" reminders, but the v1.1 CLAUDE.md instruction (see §Q9 Recall) carries that role; a future plan-mode hook would belt-and-braces it for high-value tasks (v1.2+ candidate).
 
 ### `session-start.sh` (literal)
 
@@ -316,41 +324,20 @@ shared="$("$CLAUDE_PLUGIN_ROOT/bin/kunskap" --vault "$vault" config get shared)"
 exit 0
 ```
 
-### `session-end.sh` (literal)
+### `post-write-sync.sh` (v1.1; replaces session-end.sh)
 
-```bash
-#!/usr/bin/env bash
-set -euo pipefail
+The actual implementation lives at `hooks/post-write-sync.sh` — see the file for the literal. Sketch:
 
-[[ -f "$CLAUDE_PROJECT_DIR/.claude/kunskap.json" ]] || exit 0
-"$CLAUDE_PLUGIN_ROOT/bin/kunskap" whoami --quiet || exit 0
+1. Source `hooks/_shared.sh` for vault resolution + shared check + rebase guard.
+2. Read `tool_input.file_path` from the canonical PostToolUse JSON on stdin.
+3. Reject any `../` segment (path-traversal HARD CONTRACT).
+4. Skip unless `file_path` starts with `<vault>/raw/inbox/`.
+5. Background a subshell that does `git add raw/inbox && git diff --cached --quiet || (git commit && git push)`. Backgrounding ensures the agent never waits on git or network even if the Claude Code version doesn't honour `async: true` in the JSON.
+6. `KUNSKAP_HOOK_NO_BG=1` runs the worker synchronously — used by the bats suite to assert post-conditions without sleeping.
 
-vault="$(jq -r .vault "$CLAUDE_PROJECT_DIR/.claude/kunskap.json")"
-[[ -d "$vault" ]] || exit 0
+**Shell choices**: `set -uo pipefail` (no `-e` — fail-soft is the contract); per-step `||` guards catch every expected failure path; opt-in miss exits 0 so unrelated projects aren't disturbed. Identity missing → silent skip (every Write/Edit firing this would be noisy; SessionStart already surfaces the actionable identity message once per session). Push failure → stderr message + exit 0; the next sync (manual or per-write) retries.
 
-shared="$("$CLAUDE_PLUGIN_ROOT/bin/kunskap" --vault "$vault" config get shared)"
-[[ "$shared" == "true" ]] || exit 0   # personal vaults never push
-
-cd "$vault"
-
-# Only commit if the inbox actually changed during this session
-git add raw/inbox
-if git diff --cached --quiet; then
-  exit 0
-fi
-
-session_id="${CLAUDE_SESSION_ID:-unknown}"
-who="$("$CLAUDE_PLUGIN_ROOT/bin/kunskap" whoami)"
-git commit -m "kunskap: inbox capture from session ${session_id} (${who})" --quiet
-
-# Push fail-soft: prefer to leave the work locally rather than block session shutdown
-git push --quiet 2>/dev/null \
-  || echo "Kunskap: vault push failed; will retry next session" >&2
-
-exit 0
-```
-
-**Shell choices**: `set -euo pipefail` to fail loudly during dev; opt-in miss exits 0 so unrelated projects aren't disturbed. No commit when inbox unchanged (avoids empty-noise commits). `--rebase --autostash` preserves any in-progress curator state. Fail-soft on push — closing your laptop with a flaky network shouldn't hang shutdown for one missed sync.
+**Manual lever (v1.1)**: `bin/kunskap sync` and `/kunskap:sync` cover the rare retry case (push failed earlier, user wants to flush before disconnecting). The CLI lever is loud about failures (exit 1 on push fail) — opposite of the silent async hook, on purpose.
 
 ---
 
@@ -435,6 +422,28 @@ Bases is an Obsidian-internal view system (YAML-defined filters and formulas, ev
 
 ---
 
+## Q9 — Recall trigger (v1.1)
+
+The read-side of the value loop. v1.0 shipped `kunskap recall` as a manual surface; v1.1 closes the loop so agents auto-recall at task start.
+
+**Mechanism: CLAUDE.md self-instruction.** `/kunskap:learn enable` injects a managed block into the project's `CLAUDE.md`, bounded by `<!-- BEGIN/END kunskap (managed) -->` markers. The block carries:
+
+1. The capture conventions (lifted from `templates/LAUNCH_FOOTER.md` so the conductor's launch footer + the in-project CLAUDE.md stay aligned).
+2. A Recall addendum: *"At the start of every new task, run `/kunskap:recall <keywords>` to surface prior learnings + research relevant to the goal. Incorporate matches before proceeding. Skip when the task is trivial (greetings, time queries, single-line tweaks)."*
+
+Why this and not a `UserPromptSubmit` hook injection? The hook approach was considered and rejected for v1: every prompt would carry a "search first" reminder, which is exactly the noise we deferred at v1.0. The CLAUDE.md instruction is read once when the agent reads its own context — same content, far quieter.
+
+**Tamper detection.** The injected block carries a `<!-- kunskap:hash <sha256> -->` line as its first content line. `learn disable` recomputes the hash; mismatch refuses with an actionable message ("manual edits detected inside managed block — review before disable"). No silent nuking of user edits.
+
+**Idempotency.** Re-running `learn enable` replaces the existing block in place rather than appending. The `learn disable` round-trip cleanly removes it (and removes the CLAUDE.md file entirely if the block was the only content).
+
+**Future direction (v1.2+ candidates):**
+- Plan-mode hook for forced recall at plan entry. Belt-and-braces with the CLAUDE.md instruction, non-negotiable for high-value tasks.
+- Embedding-based recall ranking when the wiki grows past `rg`'s comfort zone.
+- Recall hits as system-reminder injection on task start, gated by configurable noise threshold.
+
+---
+
 ## Vault layout (concrete)
 
 ```
@@ -465,7 +474,7 @@ Bases is an Obsidian-internal view system (YAML-defined filters and formulas, ev
 
 ### Two specifics from §Q2 worth surfacing here
 
-**`skills/kunskap-vault/SKILL.md`** — the auto-loaded skill. Description must reference the marker file (`.claude/kunskap.json`) as the trigger condition; that scopes the skill to opted-in projects without an explicit user invocation. Body covers pre-flight search, post-task inbox capture, identity rules, and link to `/kunskap:recall`.
+**`templates/LAUNCH_FOOTER.md`** — the canonical capture + recall convention sheet (v1.1). Single source of truth for inbox-note format, source-priority rule, capture trigger, recall trigger. `learn enable` reads this file and injects it (plus a Recall addendum) as a managed block into the project's `CLAUDE.md` so every session in the project sees the contract — no dependence on description-triggered Skill auto-load (which v1.0 tried; reliability was poor in practice).
 
 **`agents/curator.md` and `agents/linter.md`** — plugin agents use `tools` / `disallowedTools` (not the skill-style `allowed-tools`); they do **not** support `permissionMode`, `hooks`, or `mcpServers`. v1 curator: `model: opus`, `tools: Read Write Edit Bash`, `disallowedTools: WebFetch WebSearch`. System prompt = §Curator contract above + v0 recipe-note edge cases + the v0 launch prompt distilled to take vault path as `$ARGUMENTS`. The linter is similar with a "health checks" system prompt (drift, missing connections, drafts staleness, offline-arrivals, identity mismatch).
 
@@ -477,9 +486,9 @@ PR-by-PR breakdown, mirroring the bridge-routing-design discipline. Each PR is i
 
 | PR | Scope | Gates on |
 |---|---|---|
-| **P0 — scaffold** | `kunskap/` repo created. Plugin manifest, empty skill/`commands` placeholders, `bin/kunskap` stub that prints version. `kunskap config user`. CI that lints `plugin.json` against schema, validates `hooks/hooks.json` against the canonical reference, and runs shellcheck on `bin/kunskap`. | — |
+| **P0 — scaffold** | `kunskap/` repo created. Plugin manifest, `commands/` placeholders, `bin/kunskap` stub that prints version. `kunskap config user`. CI that lints `plugin.json` against schema, validates `hooks/hooks.json` against the canonical reference, and runs shellcheck on `bin/kunskap`. | — |
 | **P1 — curator agent + manual trigger + curator-contract tests** | `agents/curator.md` filled in from v0 librarian recipe note (or, fallback, written cold from §Curator contract — judgment call at P1 kick-off). `commands/curate.md` invokes it. `bin/kunskap curate --vault <path>` runs the same agent headlessly via `claude --plugin-dir`. **Critically**: ship a fixture-based test suite that asserts the §Curator contract rules hold — preserve hand-edits, atomic per-article commit, route-decision determinism on a frozen inbox set. No hooks, no roles, no lock — fires on demand only. Tested against a real personal vault (whose 13-note inbox is the smoke set). | P0; v0 librarian recipe note **OR** explicit decision to proceed without it |
-| **P2 — opt-in + sync hooks** | `commands/learn.md` (`enable/disable/status`, with vault confirmation prompt). `.claude/kunskap.json` marker (with `confirmed_at` timestamp). `hooks/hooks.json` + `session-start.sh` + `session-end.sh`. Personal-vault path verified (no push). Identity-mismatch banner in `status`. | P1 |
+| **P2 — opt-in + sync hooks** | `commands/learn.md` (`enable/disable/status`, with vault confirmation prompt). `.claude/kunskap.json` marker (with `confirmed_at` timestamp). `hooks/hooks.json` + `session-start.sh` + `session-end.sh` (v1.0; replaced at v1.1 by `post-write-sync.sh`). Personal-vault path verified (no push). Identity-mismatch banner in `status`. | P1 |
 | **P3 — vault bootstrap + drafts surface** | `bin/kunskap init`, `templates/vault-init/`. `commands/drafts.md` (list/show/approve/reject/defer) — port from conductor `CLAUDE.md`. New shared vault stood up by the curator-primary + cloned by team members as the smoke-test. Sample article + sample inbox note land. | P2; team members have Claude Code installed |
 | **P4 — linter agent** | `agents/linter.md`, `commands/lint.md`, `bin/kunskap lint`. Health checks: drift, missing connections, drafts staleness (≥7d), offline-machine arrivals (≥48h), curator-not-run (≥2d), identity-mismatch surfaces. Fires manually first. | P3; vault has ≥10 wiki articles to lint over |
 | **P5 — role assignment (single primary)** | `_meta/roles.toml` (single `primary` per role, no fallback). `bin/kunskap curate` honours the role check. `_meta/last-run.json` recording. **No advisory lock** — see §Q4 for why the lock variant was dropped. Two-machine smoke-test = primary machine fires, secondary machine declines with "not primary, use --force to override." | P4 |
@@ -503,7 +512,7 @@ PR-by-PR breakdown, mirroring the bridge-routing-design discipline. Each PR is i
 
 6. **GitHub Actions cron deferred.** When "fire curator while everyone offline" becomes a real need, the path is GH Actions running `kunskap curate` on the shared vault repo. `bin/kunskap` already runs headlessly. When added: single-primary-OR-GH-Actions, never both fired in the same window.
 
-7. **Vault-leak between projects.** Project `enable`-d against the wrong vault leaks across boundaries (personal notes → research vault, or vice versa). v1 mitigations: `kunskap init` + `/kunskap:learn enable` confirm the path before writing the marker; `.claude/kunskap.json` includes `confirmed_at` and `/kunskap:learn status` warns on >30d staleness; the skill description tells Claude to filter inbox notes for non-research content. Discipline-first; revisit if month-3 shows leakage in practice.
+7. **Vault-leak between projects.** Project `enable`-d against the wrong vault leaks across boundaries (personal notes → research vault, or vice versa). v1 mitigations: `kunskap init` + `/kunskap:learn enable` confirm the path before writing the marker; `.claude/kunskap.json` includes `confirmed_at` and `/kunskap:learn status` warns on >30d staleness; the v1.1 CLAUDE.md injection makes the binding visible at the project root every time the agent reads its own instructions. Discipline-first; revisit if month-3 shows leakage in practice.
 
 8. **Marketplace privacy.** Plugin repo (`kunskap/`) and marketplace repo can be public. Vault repo (`kunskap-research/`) **must** be private. Document the wrong-remote risk in README at P0.
 
@@ -543,9 +552,9 @@ This is a Kunskap-managed research vault for {{team}}. The contract:
     /kunskap:learn enable --vault <path-to-this-vault>
 
 Then sessions in that project will:
-- pull the vault on session start
-- get the kunskap-vault skill auto-loaded (vault-search-first discipline)
-- commit + push your inbox capture on session end
+- pull the vault on session start (shared vaults only)
+- read the kunskap capture+recall conventions injected into the project's `CLAUDE.md` managed block
+- commit + push each inbox write asynchronously via the PostToolUse hook (shared vaults only)
 
 ## Roles
 

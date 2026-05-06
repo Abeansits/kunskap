@@ -1,7 +1,7 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "kunskap",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "Knowledge-base plugin for Claude Code. Curate session learnings into an Obsidian-style wiki shared across machines and humans. (Vigil/Sigil/Ting/Kunskap family.)",
   "author": {
     "name": "Sebastian Nystrom",

@@ -280,3 +280,40 @@ EOF
   [[ "$status" -ne 0 ]]
   [[ "$output" == *"unknown subcommand"* ]]
 }
+
+# ---------- v1.1 inbox visibility nudge ----------
+
+@test "learn status surfaces INBOX: 0 uncommitted notes when inbox is clean" {
+  cd "$TMPPROJ"
+  vault="$(mktemp -d)"
+  mkdir -p "$vault/_meta" "$vault/raw/inbox"
+  cat > "$vault/_meta/kunskap.toml" <<EOF
+[vault]
+shared = false
+EOF
+  ( cd "$vault" && git init -q && git config user.email s@b && git config user.name s && git add . && git commit -q -m seed )
+  KUNSKAP_AUTO_CONFIRM=1 "$KUNSKAP_BIN" learn enable --vault "$vault"
+  run "$KUNSKAP_BIN" learn status
+  [[ "$status" -eq 0 ]]
+  [[ "$output" == *"INBOX: 0 uncommitted notes"* ]]
+  rm -rf "$vault"
+}
+
+@test "learn status surfaces INBOX: N uncommitted notes when present (suggests /kunskap:sync)" {
+  cd "$TMPPROJ"
+  vault="$(mktemp -d)"
+  mkdir -p "$vault/_meta" "$vault/raw/inbox"
+  cat > "$vault/_meta/kunskap.toml" <<EOF
+[vault]
+shared = false
+EOF
+  ( cd "$vault" && git init -q && git config user.email s@b && git config user.name s && git add . && git commit -q -m seed )
+  echo "a" > "$vault/raw/inbox/a.md"
+  echo "b" > "$vault/raw/inbox/b.md"
+  KUNSKAP_AUTO_CONFIRM=1 "$KUNSKAP_BIN" learn enable --vault "$vault"
+  run "$KUNSKAP_BIN" learn status
+  [[ "$status" -eq 0 ]]
+  [[ "$output" == *"INBOX: 2 uncommitted notes"* ]]
+  [[ "$output" == *"/kunskap:sync"* ]]
+  rm -rf "$vault"
+}
