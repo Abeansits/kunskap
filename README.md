@@ -5,13 +5,20 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Claude Code Plugin](https://img.shields.io/badge/Claude%20Code-Plugin-blueviolet.svg)](https://docs.claude.com/en/docs/claude-code/plugins)
 
-Knowledge-base plugin for Claude Code. Sessions write loose notes into an inbox; a librarian agent compiles them into prose articles with `[[wikilinks]]` and `## Sources` provenance — Karpathy's compile model, packaged as a Claude Code plugin. Sibling to Vigil / Sigil / Ting.
+Knowledge-base plugin for Claude Code. Sessions write loose notes into an inbox; a librarian agent compiles them into prose articles with `[[wikilinks]]` and `## Sources` provenance — Karpathy's compile model, packaged as a Claude Code plugin. Sibling to Vigil / [Sigil](https://github.com/Abeansits/sigil) / [Ting](https://github.com/Abeansits/ting).
+
+## Why Kunskap?
+
+Useful findings — gotchas, design decisions, "this is how X really works" — accumulate across sessions and scatter across thread logs and scratchpads. Hard to recover; hard to share. Kunskap captures them as you work and a librarian agent compiles them into a searchable wiki:
+
+- **Inbox-first capture.** Sessions write one-paragraph notes to `<vault>/raw/inbox/` at task end. No friction at capture time.
+- **Librarian-compiled wiki.** A curator agent routes inbox notes into prose articles with `[[wikilinks]]` and per-source `## Sources` footers — provenance preserved; nothing silently dropped.
+- **Multiplayer-safe.** Many writers to the inbox; one designated machine writes the wiki. No locks, no races.
+- **Searchable from any session.** `/kunskap:recall` queries the wiki + inbox in-place.
 
 ## Status
 
-**v1.0.0 — multiplayer-safe, marketplace-installable, search-enabled.** A small team can clone the marketplace, install the plugin, run `kunskap init` on a shared vault, and start using it. The phased rollout (P0 → P6) shipped on schedule; the design lives at [`docs/kunskap-design.md`](docs/kunskap-design.md).
-
-Post-v1.0 work (cron / GitHub Actions, settings UI, search v2 with embeddings) is driven by real-usage findings, not speculative roadmaps — see the design's §Open decisions for the current deferral list.
+**v1.0.0 — multiplayer-safe, marketplace-installable, search-enabled.** A small team can clone the marketplace, install the plugin, run `kunskap init` on a shared vault, and start using it. The full design lives at [`docs/kunskap-design.md`](docs/kunskap-design.md).
 
 ## Install
 
@@ -43,6 +50,11 @@ Multiple projects can point at the same vault — common when a team has one res
 
 ## The three core flows
 
+Two librarian agents do the heavy lifting:
+
+- **🤖 Curator** — reads `raw/inbox/` and writes wiki articles. Atomic per-article commits, hand-edit-preserving. Runs only on the designated curator-primary machine.
+- **🤖 Linter** — audits the wiki for drift, stale drafts, missing connections, identity mismatches. Read-only — never writes.
+
 ```mermaid
 flowchart LR
   S[sessions] -->|1. capture| I[(raw/inbox)]
@@ -53,7 +65,7 @@ flowchart LR
   W -->|audit| L[/kunskap:lint<br/>findings/]
 ```
 
-### 1. Capture — sessions write inbox notes
+### 1. Capture — 👤 you write inbox notes; 🤖 hooks sync them
 
 The `kunskap-vault` skill auto-loads in projects that opted in (`.claude/kunskap.json` marker). The launch footer reminds Claude to capture learnings + ideas to `<vault>/raw/inbox/` at task end. The `SessionEnd` hook commits and pushes (shared vaults only — solo vaults never push, per Risk #8).
 
@@ -75,7 +87,7 @@ kunskap init ~/Projects/team-vault --name "Team Vault" \
   --shared git@github.com:org/team-vault.git
 ```
 
-### 2. Curate — compile inbox into wiki
+### 2. Curate — 🤖 curator writes the wiki; 👤 you triage drafts
 
 Run on the curator's primary machine (set in `<vault>/_meta/roles.toml`):
 
@@ -105,7 +117,7 @@ The linter audits the wiki without writing (read-only contract enforced at the C
 
 Findings: drift across articles, stub clusters, draft staleness (≥7d), offline arrivals (≥48h), curator absence (≥2d), identity mismatches.
 
-### 3. Recall — search from inside a session
+### 3. Recall — 👤 or 🤖 search the wiki in-place
 
 ```
 /kunskap:recall <query> [--author X] [--tag Y] [--limit N] [--format text|json]
@@ -118,7 +130,7 @@ Findings: drift across articles, stub clusters, draft staleness (≥7d), offline
 
 ## Roles (multiplayer)
 
-The curator and linter run only on their designated machine, so a small team can use one shared vault without races. Roles are **static config**, not dynamic locks: `<vault>/_meta/roles.toml` is hand-edited, committed, and pushed; whoever pulls latest sees the new primaries. (An earlier design tried in-vault advisory locks acquired by commit-and-push — pass-2 review found a TOCTOU race that wedged the vault mid-rebase, so locks were dropped — see design §Q4.)
+The curator and linter run only on their designated machine, so a small team can use one shared vault without races. Roles are **static config**, not dynamic locks: `<vault>/_meta/roles.toml` is hand-edited, committed, and pushed; whoever pulls latest sees the new primaries. (Lockless on purpose — see design §Q4 for the race condition that ruled out advisory locks.)
 
 Solo and pre-handoff vaults work without roles configured: a freshly-init'd vault carries `primary = "TBD"` for both roles, and the CLI warns + proceeds.
 
@@ -157,17 +169,17 @@ The full risk register lives in [`docs/kunskap-design.md`](docs/kunskap-design.m
 
 ## Roadmap
 
-Full design: [`docs/kunskap-design.md`](docs/kunskap-design.md). v1.0 is the end of the planned phase chain (P0 → P6); post-v1.0 work is driven by real-usage findings.
+Full design: [`docs/kunskap-design.md`](docs/kunskap-design.md).
 
-| PR | Scope |
-|---|---|
-| **P0** | Plugin manifest, `bin/kunskap`, `config user` / `whoami`, CI. |
-| **P1** | Curator agent + manual trigger + curator-contract tests. |
-| **P2** | `/kunskap:learn enable\|disable\|status` + `SessionStart` / `SessionEnd` sync hooks. |
-| **P3** | `kunskap init <vault-path>` + drafts surface. |
-| **P4** | Linter agent + health checks. Read-only contract. |
-| **P5** | Single-primary role assignment + sharded `_meta/last-run/{curator,linter}.json` + headless-agent CWD fix. |
-| **P6 (this release)** | Search (`kunskap recall`) + Obsidian Bases starters + marketplace listing + README polish. |
+- [x] **P0** — Plugin manifest, `bin/kunskap`, `config user` / `whoami`, CI.
+- [x] **P1** — Curator agent + manual trigger + curator-contract tests.
+- [x] **P2** — `/kunskap:learn enable|disable|status` + `SessionStart` / `SessionEnd` sync hooks.
+- [x] **P3** — `kunskap init <vault-path>` + drafts surface.
+- [x] **P4** — Linter agent + health checks. Read-only contract.
+- [x] **P5** — Single-primary role assignment + sharded `_meta/last-run/{curator,linter}.json` + headless-agent CWD fix.
+- [x] **P6** — Search (`kunskap recall`) + Obsidian Bases starters + marketplace listing + README polish.
+
+Post-v1.0 work (cron / GitHub Actions, settings UI, search v2 with embeddings) is driven by real-usage findings, not a fixed roadmap.
 
 ## License
 

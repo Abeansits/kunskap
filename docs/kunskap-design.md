@@ -9,7 +9,7 @@ lineage: sibling to Vigil / Sigil / Ting
 
 ## TL;DR
 
-Kunskap is a Claude Code plugin that turns any directory into a curator-managed Obsidian-style knowledge vault. Sessions write loose notes into `raw/inbox/`; a librarian agent (Curator nightly + Linter weekly) compiles them into prose articles with `[[wikilinks]]` and `## Sources` provenance, per Karpathy. The plugin ships a `kunskap` CLI inside `bin/` so the same engine drives `/kunskap:curate` slash invocations and shell ops. Per-project opt-in via `/kunskap:learn enable --vault <path>` writes a marker file; hooks no-op without it. Multiplayer = single-primary-curator (no fallback, no advisory lock — see §Q4 for why the locking variant was dropped after pass-2 review); everyone writes only to `raw/inbox/`. Search is `rg` first; Obsidian 1.12 CLI is a best-effort second pass when the desktop app is running.
+Kunskap is a Claude Code plugin that turns any directory into a curator-managed Obsidian-style knowledge vault. Sessions write loose notes into `raw/inbox/`; a librarian agent (Curator nightly + Linter weekly) compiles them into prose articles with `[[wikilinks]]` and `## Sources` provenance, per Karpathy. The plugin ships a `kunskap` CLI inside `bin/` so the same engine drives `/kunskap:curate` slash invocations and shell ops. Per-project opt-in via `/kunskap:learn enable --vault <path>` writes a marker file; hooks no-op without it. Multiplayer = single-primary-curator (no fallback, no advisory lock — see §Q4 for why locks are intentionally avoided); everyone writes only to `raw/inbox/`. Search is `rg` first; Obsidian 1.12 CLI is a best-effort second pass when the desktop app is running.
 
 ## Decisions Locked
 
@@ -147,7 +147,7 @@ No `schedule` field in v1 — v1 fires on demand via `/kunskap:curate` and `/kun
 
 **Single-primary, no fallback, no advisory lock. Manual firing only. GH Actions deferred.**
 
-An earlier draft tried in-vault advisory locks acquired by commit-and-push. That has a TOCTOU race: two machines that both pull-clean and both write `_meta/curator.lock` end the loser's `git pull --rebase` in a YAML conflict on the lock file itself, leaving the vault mid-rebase. (The "git lfs lock" comparison was wrong — git lfs uses an atomic server endpoint, not file-plus-commit.) Mechanism dropped.
+In-vault advisory locks (acquired by commit-and-push) are intentionally avoided. They have a TOCTOU race: two machines that both pull-clean and both write `_meta/curator.lock` end the loser's `git pull --rebase` in a YAML conflict on the lock file itself, leaving the vault mid-rebase. (The "git lfs lock" analogy doesn't hold — git lfs uses an atomic server endpoint, not file-plus-commit.)
 
 **Mechanism**:
 1. `_meta/roles.toml` — exactly one `primary` per role, no fallback.
@@ -164,9 +164,9 @@ An earlier draft tried in-vault advisory locks acquired by commit-and-push. That
 
 ---
 
-## Curator contract (the §Q4 follow-on)
+## Curator contract
 
-Pass 2's biggest-hole observation: the design over-specifies coordination and under-specifies what the curator *does*. This section fixes that. `agents/curator.md` (P1) implements it. v0 recipe §1 norms + §2 prompt-additions + §6 patterns are the source.
+What the curator *does*, in detail. `agents/curator.md` implements this contract. The norms + prompt rules + recipes here are the source-of-truth that the agent prompt mirrors.
 
 **Operating norms (v0 recipe §1)**:
 1. Librarian owns all of `wiki/` (no human-vs-agent dir split).
@@ -254,7 +254,7 @@ All hooks no-op when `.claude/kunskap.json` is missing in the project. That file
 
 ### `hooks/hooks.json`
 
-The pass-1 review flagged that the original draft's top-level `description` field and per-handler `timeout` field are not in any canonical example. Both are dropped from this version pending hands-on verification at P2. If they turn out to be supported, they're additive cleanup; if not, the doc never claimed them.
+Top-level `description` and per-handler `timeout` fields are intentionally absent — neither appears in any canonical example, and both are pending hands-on verification before adoption.
 
 ```json
 {
@@ -283,7 +283,7 @@ The pass-1 review flagged that the original draft's top-level `description` fiel
 }
 ```
 
-**SessionEnd matcher values** (per the canonical hooks reference, surfaced in pass-1): `clear`, `resume`, `logout`, `prompt_input_exit`, `bypass_permissions_disabled`, `other`. v1 uses `"*"` (fire on all of them); a v2 refinement could use `prompt_input_exit|other` to skip `clear` (which doesn't really mean session over) — defer until we observe noise.
+**SessionEnd matcher values** (per the canonical hooks reference): `clear`, `resume`, `logout`, `prompt_input_exit`, `bypass_permissions_disabled`, `other`. v1 uses `"*"` (fire on all of them); a v2 refinement could use `prompt_input_exit|other` to skip `clear` (which doesn't really mean session over) — defer until we observe noise.
 
 **Hook reliability is best-effort, not guaranteed.** The canonical reference is silent on whether `SessionEnd` fires on SIGKILL, whether Claude Code waits for the hook, and whether per-handler timeouts are enforced. The v0 SessionEnd contract elsewhere in this doc treats inbox sync as best-effort: if the hook doesn't fire (hard kill, OS forced shutdown), the inbox capture is in the local vault but unpushed. The next session-start `git pull --rebase` doesn't lose it; the next session-end pushes it. Document this clearly to users: **closing your laptop with a kunskap session running is fine; SIGKILL'ing the Claude Code process loses that session's inbox commit until next session-end**.
 
@@ -360,7 +360,7 @@ exit 0
 
 Per the canonical docs, `/plugin marketplace add <github-shorthand>` resolves a marketplace by GitHub shorthand, and marketplaces can be private (`/en/plugin-marketplaces#private-repositories`). For a small team this is the lowest-friction path: one repo (`kunskap-marketplace`, separate from the plugin repo), and contributors run one command.
 
-**Marketplace file path matters.** The marketplace manifest lives at `.claude-plugin/marketplace.json` *inside* the marketplace repo (not bare `marketplace.json` at the repo root). Pass-1 review flagged the original draft missed this. Layout:
+**Marketplace file path matters.** The marketplace manifest lives at `.claude-plugin/marketplace.json` *inside* the marketplace repo (not bare `marketplace.json` at the repo root). Layout:
 
 ```
 kunskap-marketplace/                       # the marketplace repo (private GitHub)
@@ -427,7 +427,7 @@ kunskap recall <query> [--author X] [--tag Y] [--vault <path>] [--limit N]
 2. **Stage 2 — Obsidian (best-effort).** Detect with `command -v obsidian && pgrep -x Obsidian >/dev/null`. If both: invoke `obsidian search` and merge by path (prefer the obsidian record's relevance score where it disagrees). Skip if either check fails. Never block on this stage.
 3. **Output** sorted by score, truncated to `--limit` (default 20). For agent-callability, `--format json` returns the structured array; default is human-readable bulleted snippets.
 
-**Obsidian CLI syntax — VERIFY AT P6.** Pass-1 review found that `obsidian.md/help/cli` returned a 404 at fetch time and the actual `obsidian search` flag shape (`query="..."` keyword args vs. positional, `format=json` vs. `--format json`, what subcommand variants like `search:context` / `search:open` mean) is not confirmed. The design's Stage-2 invocation must be smoke-tested against a real Obsidian 1.12 install during P6 implementation. Worst case: the CLI shape differs and the integration is more like "open the Obsidian search view with the query pre-populated" rather than a programmatic merge. That degrades the Stage-2 surface but doesn't break Stage-1 — `rg` carries the load and is the design's load-bearing search primitive.
+**Stage-2 graceful degradation is load-bearing.** If Obsidian's CLI shape changes or the integration becomes "open the Obsidian search view with the query pre-populated" rather than a programmatic merge, the Stage-2 surface degrades but Stage-1 still carries — `rg` is the design's load-bearing search primitive.
 
 ### Why not Bases here
 
