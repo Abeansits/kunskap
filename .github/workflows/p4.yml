@@ -25,7 +25,7 @@ jobs:
 
       - name: shellcheck bin/kunskap + hooks
         run: |
-          shellcheck -e SC1090,SC1091 bin/kunskap hooks/session-start.sh hooks/session-end.sh
+          shellcheck -e SC1090,SC1091 bin/kunskap hooks/session-start.sh hooks/post-write-sync.sh
           shellcheck hooks/_shared.sh
 
       # ---------- bin/kunskap surface health ----------
