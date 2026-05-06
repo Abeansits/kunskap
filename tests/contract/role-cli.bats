@@ -262,3 +262,145 @@ EOF
   fn_body cmd_curate | grep -q '\-\-add-dir "$vault"'
   fn_body cmd_lint | grep -q '\-\-add-dir "$vault"'
 }
+
+# ---------- v1.0.1 spawn permissions (subprocess permission fix) ----------
+#
+# Real-usage finding 2026-05-06 (Vigil's first end-to-end smoke against
+# ~/Projects/kunskap-smoke): both curate + lint aborted because spawning with
+# --permission-mode acceptEdits covers Edit/Write/fs-ops but NOT Bash git ops.
+# The curator's MUST 1 atomic per-article commits and the linter's run-record
+# write (single permitted exception per P5) both need git add/commit/mv via
+# Bash, which prompted with no human attached → denied. v1.0.1 switches to
+# `--permission-mode dontAsk` + an explicit `--allowed-tools` allow-list.
+#
+# These shape-tests are defense-in-depth: they catch any future /simplify
+# pass that swaps the allow-list back to bypassPermissions for convenience,
+# and they enforce the linter-tighter-than-curator invariant.
+
+@test "cmd_curate spawn uses --allowed-tools + --permission-mode dontAsk (v1.0.1)" {
+  local body
+  body="$(fn_body cmd_curate)"
+  echo "$body" | grep -q '\-\-allowed-tools "\$curator_tools"'
+  echo "$body" | grep -q '\-\-permission-mode dontAsk'
+  # Old shape must be gone — acceptEdits doesn't cover Bash git ops, that
+  # was the v1.0.1 bug. Catch a regression that re-introduces it.
+  ! echo "$body" | grep -q '\-\-permission-mode acceptEdits'
+}
+
+@test "cmd_lint spawn uses --allowed-tools + --permission-mode dontAsk (v1.0.1)" {
+  local body
+  body="$(fn_body cmd_lint)"
+  echo "$body" | grep -q '\-\-allowed-tools "\$linter_tools"'
+  echo "$body" | grep -q '\-\-permission-mode dontAsk'
+  ! echo "$body" | grep -q '\-\-permission-mode acceptEdits'
+}
+
+@test "cmd_curate + cmd_lint never spawn with bypassPermissions (defense in depth)" {
+  # Bypass mode would grant arbitrary Bash, defeating the allow-list contract.
+  # Also covers writes to .git/.claude/.vscode/.idea/.husky per canonical docs
+  # — the agent has no business there. If a future /simplify or refactor pass
+  # swaps in bypassPermissions for "convenience", this test fails the run.
+  ! fn_body cmd_curate | grep -q 'bypassPermissions'
+  ! fn_body cmd_lint   | grep -q 'bypassPermissions'
+  # Defense in depth × 2: also reject `Bash(*)` which is bypass-equivalent
+  # for shell ops.
+  ! fn_body cmd_curate | grep -qE 'Bash\(\*\)'
+  ! fn_body cmd_lint   | grep -qE 'Bash\(\*\)'
+}
+
+@test "cmd_curate allow-list pre-approves the git ops the curator subagent invokes" {
+  # MUST 1 atomic per-article commits need add + mv + commit at minimum.
+  # Bare `git foo` form only — `*` in --allowed-tools matchers is a literal
+  # asterisk, not a glob (Pass-2 empirical finding), so `Bash(git -C * foo:*)`
+  # rules don't match real `git -C <abs-path> foo` commands. cd-into-vault
+  # before spawn makes CWD = vault, so bare form covers all curator git ops.
+  local body
+  body="$(fn_body cmd_curate)"
+  echo "$body" | grep -q 'Bash(git add:\*)'
+  echo "$body" | grep -q 'Bash(git commit:\*)'
+  echo "$body" | grep -q 'Bash(git mv:\*)'
+  echo "$body" | grep -q 'Bash(git rm:\*)'
+  # Run-record recipe (agents/curator.md §6): mkdir + jq.
+  echo "$body" | grep -q 'Bash(mkdir:\*)'
+  echo "$body" | grep -q 'Bash(jq:\*)'
+}
+
+@test "cmd_curate allow-list never includes git push (P2 SessionEnd hook owns push)" {
+  # Curator runs locally; pushing is the SessionEnd hook's job (P2). If a
+  # future change adds `Bash(git push:*)` to the curator allow-list it's
+  # almost certainly a mistake — the agent shouldn't push.
+  local body
+  body="$(fn_body cmd_curate)"
+  ! echo "$body" | grep -qE 'Bash\(git push'
+  ! echo "$body" | grep -qE 'Bash\(git -C \* push'
+}
+
+@test "cmd_lint allow-list is tighter than cmd_curate's (read-only invariant)" {
+  # Linter MUST 8 read-only invariant: the only path the linter writes is
+  # _meta/last-run/linter.json. Reflect that at the permissions layer:
+  #   - No Edit / MultiEdit (linter never modifies existing files).
+  #   - git add is per-path-scoped to _meta/last-run/linter.json, not `git
+  #     add:*` (curator-style).
+  local body
+  body="$(fn_body cmd_lint)"
+  # Per-path scoping for the run-record write. The CLI authoritative invariant
+  # check below the spawn (P4 §3 status_before/after + HEAD oid) is the trust
+  # boundary; the per-path allow rule is defense in depth.
+  echo "$body" | grep -q 'Bash(git add _meta/last-run/linter\.json)'
+  # Linter must NOT have the broad `git add:*` curator-style rule.
+  ! echo "$body" | grep -qE 'Bash\(git add:\*\)'
+  # Linter must NOT have Edit / MultiEdit / git mv / git rm.
+  ! echo "$body" | grep -qE 'linter_tools.*Edit'
+  ! echo "$body" | grep -qE 'linter_tools.*MultiEdit'
+  ! echo "$body" | grep -qE 'Bash\(git mv'
+  ! echo "$body" | grep -qE 'Bash\(git rm'
+}
+
+@test "cmd_lint allow-list covers the read-only git ops the linter subagent invokes" {
+  # MUST 6 identity-mismatch needs git log; MUST 8 self-check needs git
+  # status; everything uses git rev-parse for HEAD oid. Bare `git foo` form
+  # only — `*` in matchers is literal, not a glob (Pass-2 empirical finding).
+  local body
+  body="$(fn_body cmd_lint)"
+  echo "$body" | grep -q 'Bash(git status:\*)'
+  echo "$body" | grep -q 'Bash(git log:\*)'
+  echo "$body" | grep -q 'Bash(git rev-parse:\*)'
+}
+
+@test "cmd_curate + cmd_lint allow-list both include Agent (subagent invocation)" {
+  # The directive prompt invokes the curator/linter subagent via the Agent
+  # tool (canonical docs §Agent SDK overview — "Include `Agent` in
+  # allowedTools since subagents are invoked via the Agent tool"). Without
+  # this entry, the parent claude can't spawn the subagent, defeating the
+  # entire spawn shape.
+  fn_body cmd_curate | grep -qE 'curator_tools="[^"]*Agent'
+  fn_body cmd_lint   | grep -qE 'linter_tools="[^"]*Agent'
+}
+
+@test "cmd_curate + cmd_lint allow-lists never use the dead Bash(git -C * ...) form" {
+  # Pass-2 empirical finding (claude 2.1.129): `*` inside --allowed-tools
+  # matchers is a LITERAL asterisk, not a glob. `Bash(git -C * status:*)`
+  # does NOT match `git -C /abs/path status` — that command falls through
+  # to the bare-form rules (`Bash(git status:*)`) IF CWD makes -C redundant,
+  # otherwise gets denied. Either way the -C * rules are dead weight; their
+  # presence misleads readers about what's actually permitted. Lock the
+  # absence so a future "defense in depth" refactor can't reintroduce them
+  # without empirical justification.
+  ! fn_body cmd_curate | grep -qE 'Bash\(git -C \*'
+  ! fn_body cmd_lint   | grep -qE 'Bash\(git -C \*'
+}
+
+@test "cmd_lint allow-list covers awk + find + xargs (MUST 3 frontmatter parsing)" {
+  # agents/linter.md §Frontmatter parsing mandates the canonical anchor-to-
+  # NR==1 awk recipe for every draft's `created:` / `deferred_at:` parse
+  # (MUST 3 staleness), and `find … | xargs awk` for single-pass bulk
+  # parsing (agents/linter.md:152). The first smoke missed this because
+  # the smoke vault had no stale drafts; any production vault with
+  # wiki/_drafts/*.md triggers silent denials without these. Pass-1 review
+  # gap, locked here to prevent regression.
+  local body
+  body="$(fn_body cmd_lint)"
+  echo "$body" | grep -q 'Bash(awk:\*)'
+  echo "$body" | grep -q 'Bash(find:\*)'
+  echo "$body" | grep -q 'Bash(xargs:\*)'
+}
