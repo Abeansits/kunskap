@@ -310,18 +310,16 @@ EOF
 
 @test "cmd_curate allow-list pre-approves the git ops the curator subagent invokes" {
   # MUST 1 atomic per-article commits need add + mv + commit at minimum.
-  # Cover both `git foo` and `git -C $vault foo` forms — agent prompts in
-  # agents/curator.md use the -C form; cd-into-vault context permits the
-  # bare form. Allow-list covers both so neither prompts.
+  # Bare `git foo` form only — `*` in --allowed-tools matchers is a literal
+  # asterisk, not a glob (Pass-2 empirical finding), so `Bash(git -C * foo:*)`
+  # rules don't match real `git -C <abs-path> foo` commands. cd-into-vault
+  # before spawn makes CWD = vault, so bare form covers all curator git ops.
   local body
   body="$(fn_body cmd_curate)"
   echo "$body" | grep -q 'Bash(git add:\*)'
   echo "$body" | grep -q 'Bash(git commit:\*)'
   echo "$body" | grep -q 'Bash(git mv:\*)'
   echo "$body" | grep -q 'Bash(git rm:\*)'
-  echo "$body" | grep -q 'Bash(git -C \* add:\*)'
-  echo "$body" | grep -q 'Bash(git -C \* commit:\*)'
-  echo "$body" | grep -q 'Bash(git -C \* mv:\*)'
   # Run-record recipe (agents/curator.md §6): mkdir + jq.
   echo "$body" | grep -q 'Bash(mkdir:\*)'
   echo "$body" | grep -q 'Bash(jq:\*)'
@@ -345,15 +343,12 @@ EOF
   #     add:*` (curator-style).
   local body
   body="$(fn_body cmd_lint)"
-  # Per-path scoping for the run-record write — both `git foo` + `git -C *
-  # foo` forms covered. The CLI authoritative invariant check below the
-  # spawn (P4 §3 status_before/after + HEAD oid) is the trust boundary;
-  # the per-path allow rule is defense in depth.
+  # Per-path scoping for the run-record write. The CLI authoritative invariant
+  # check below the spawn (P4 §3 status_before/after + HEAD oid) is the trust
+  # boundary; the per-path allow rule is defense in depth.
   echo "$body" | grep -q 'Bash(git add _meta/last-run/linter\.json)'
-  echo "$body" | grep -q 'Bash(git -C \* add _meta/last-run/linter\.json)'
   # Linter must NOT have the broad `git add:*` curator-style rule.
   ! echo "$body" | grep -qE 'Bash\(git add:\*\)'
-  ! echo "$body" | grep -qE 'Bash\(git -C \* add:\*\)'
   # Linter must NOT have Edit / MultiEdit / git mv / git rm.
   ! echo "$body" | grep -qE 'linter_tools.*Edit'
   ! echo "$body" | grep -qE 'linter_tools.*MultiEdit'
@@ -363,18 +358,13 @@ EOF
 
 @test "cmd_lint allow-list covers the read-only git ops the linter subagent invokes" {
   # MUST 6 identity-mismatch needs git log; MUST 8 self-check needs git
-  # status; everything uses git rev-parse for HEAD oid. All these ARE
-  # auto-approved as built-in read-only forms in dontAsk mode per canonical
-  # docs, but explicit allow rules insulate against future Claude Code
-  # changes + cover the "unquoted glob promotes to prompt" edge case.
+  # status; everything uses git rev-parse for HEAD oid. Bare `git foo` form
+  # only — `*` in matchers is literal, not a glob (Pass-2 empirical finding).
   local body
   body="$(fn_body cmd_lint)"
   echo "$body" | grep -q 'Bash(git status:\*)'
   echo "$body" | grep -q 'Bash(git log:\*)'
   echo "$body" | grep -q 'Bash(git rev-parse:\*)'
-  echo "$body" | grep -q 'Bash(git -C \* status:\*)'
-  echo "$body" | grep -q 'Bash(git -C \* log:\*)'
-  echo "$body" | grep -q 'Bash(git -C \* rev-parse:\*)'
 }
 
 @test "cmd_curate + cmd_lint allow-list both include Agent (subagent invocation)" {
@@ -385,6 +375,19 @@ EOF
   # entire spawn shape.
   fn_body cmd_curate | grep -qE 'curator_tools="[^"]*Agent'
   fn_body cmd_lint   | grep -qE 'linter_tools="[^"]*Agent'
+}
+
+@test "cmd_curate + cmd_lint allow-lists never use the dead Bash(git -C * ...) form" {
+  # Pass-2 empirical finding (claude 2.1.129): `*` inside --allowed-tools
+  # matchers is a LITERAL asterisk, not a glob. `Bash(git -C * status:*)`
+  # does NOT match `git -C /abs/path status` — that command falls through
+  # to the bare-form rules (`Bash(git status:*)`) IF CWD makes -C redundant,
+  # otherwise gets denied. Either way the -C * rules are dead weight; their
+  # presence misleads readers about what's actually permitted. Lock the
+  # absence so a future "defense in depth" refactor can't reintroduce them
+  # without empirical justification.
+  ! fn_body cmd_curate | grep -qE 'Bash\(git -C \*'
+  ! fn_body cmd_lint   | grep -qE 'Bash\(git -C \*'
 }
 
 @test "cmd_lint allow-list covers awk + find + xargs (MUST 3 frontmatter parsing)" {

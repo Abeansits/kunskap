@@ -603,9 +603,13 @@ Report the curator's summary back when it returns."
   #     allow rules insulate against future Claude Code changes + cover the
   #     "unquoted glob promotes to prompt" edge per §Read-only commands.
   #   Write git (add/commit/mv/rm) — MUST 1 atomic per-article commits.
-  #   Both `git foo` and `git -C <vault> foo` forms — agent prompts in
-  #     agents/curator.md use the -C form; cd-into-vault context permits
-  #     the bare form. Allow both so neither shape prompts.
+  #   Bare `git foo` form only — Pass-2 empirical finding: `*` in --allowed-
+  #     tools matchers is a literal asterisk, not a glob, so a "git -C
+  #     <wildcard> foo" rule does not match real `git -C <abs-path> foo`
+  #     commands and would be dead weight. We rely on the cd-into-vault
+  #     below making CWD = vault so the agent's bare `git foo` form is
+  #     sufficient. Verified by smoke: curator's MUST 1 atomic per-article
+  #     commits land via bare `git add` + `git commit` + `git mv`.
   #   mkdir/jq/date — `mkdir -p _meta/last-run` + `jq -n ... > curator.json`
   #     + `date -u +...` per the run-record recipe in agents/curator.md §Run
   #     shape step 6.
@@ -618,9 +622,7 @@ Report the curator's summary back when it returns."
   #     Bash(*) would be bypass-equivalent for shell ops.
   local curator_tools="Read,Write,Edit,MultiEdit,Glob,Grep,Agent"
   curator_tools+=",Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git rev-parse:*),Bash(git ls-files:*),Bash(git check-ignore:*)"
-  curator_tools+=",Bash(git -C * status:*),Bash(git -C * diff:*),Bash(git -C * log:*),Bash(git -C * rev-parse:*),Bash(git -C * ls-files:*),Bash(git -C * check-ignore:*)"
   curator_tools+=",Bash(git add:*),Bash(git commit:*),Bash(git mv:*),Bash(git rm:*)"
-  curator_tools+=",Bash(git -C * add:*),Bash(git -C * commit:*),Bash(git -C * mv:*),Bash(git -C * rm:*)"
   curator_tools+=",Bash(mkdir:*),Bash(jq:*),Bash(tee:*),Bash(date:*),Bash(grep:*),Bash(sort:*),Bash(uniq:*),Bash(kunskap:*)"
   cd "$vault"
   exec claude --add-dir "$vault" --plugin-dir "$root" --allowed-tools "$curator_tools" --permission-mode dontAsk -p "$prompt"
@@ -729,11 +731,14 @@ Do NOT attempt the audit yourself; the linter subagent must own it. Do NOT write
   #     since commit-message shell quoting is fragile to constrain (the CLI
   #     invariant check catches any commit that touches non-whitelisted
   #     paths regardless).
+  # Bare `git foo` form only — Pass-2 empirical finding: `*` in --allowed-
+  # tools matchers is a literal asterisk, not a glob, so a "git -C <wildcard>
+  # foo" rule does not match real `git -C <abs-path> foo` commands and would
+  # be dead weight. The cd-into-vault below makes CWD = vault, so the agent's
+  # bare `git foo` form covers the linter's MUST 9 run-record commit.
   local linter_tools="Read,Write,Glob,Grep,Agent"
   linter_tools+=",Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git rev-parse:*),Bash(git ls-files:*)"
-  linter_tools+=",Bash(git -C * status:*),Bash(git -C * diff:*),Bash(git -C * log:*),Bash(git -C * rev-parse:*),Bash(git -C * ls-files:*)"
-  linter_tools+=",Bash(git add _meta/last-run/linter.json),Bash(git -C * add _meta/last-run/linter.json)"
-  linter_tools+=",Bash(git commit:*),Bash(git -C * commit:*)"
+  linter_tools+=",Bash(git add _meta/last-run/linter.json),Bash(git commit:*)"
   linter_tools+=",Bash(mkdir:*),Bash(jq:*),Bash(tee:*),Bash(date:*),Bash(grep:*),Bash(sort:*),Bash(uniq:*),Bash(kunskap:*)"
   # awk + find + xargs are mandated by agents/linter.md §Frontmatter parsing:
   # the canonical anchor-to-NR==1 awk recipe parses each draft's `created:` /
