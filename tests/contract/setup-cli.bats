@@ -303,6 +303,22 @@ EOF
   # Pass-1 (Codex) added the mid-rebase guard — lock it so a future edit
   # can't drop it silently.
   [[ "$body" == *"mid_rebase_guard"* ]]
+  # Pass-2 (Codex) flagged that `[[ -d "$vault/.git" ]]` skips git worktrees
+  # (where .git is a file). Lock the canonical detection — and the absence
+  # of the naive form — so it can't regress.
+  [[ "$body" == *"rev-parse --is-inside-work-tree"* ]]
+  [[ "$body" != *"-d \"\$vault/.git\""* ]]
+}
+
+@test "set_role_primaries places its tempfile next to the target (atomic-mv on same fs)" {
+  # Pass-2 (Codex) flagged that mktemp -t lands in TMPDIR which on macOS is
+  # a different filesystem from the vault, making the mv copy+unlink rather
+  # than atomic rename. The fix is to mktemp inside the vault. Lock by
+  # grepping the function body — the mktemp arg must reference \$file, not
+  # the bare -t flag form.
+  body="$(fn_body set_role_primaries)"
+  [[ "$body" == *'mktemp "$file.'* ]]
+  [[ "$body" != *'mktemp -t kunskap-roles'* ]]
 }
 
 # ---------- mid-rebase guard (Codex Pass 1 finding) ----------

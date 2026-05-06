@@ -83,18 +83,31 @@ On `y`, run that exact command. **Print the CLI output verbatim** — don't para
 
 ## Branch B — existing identity, no project marker
 
-Skip the identity question. Print:
+Skip the identity question. Print one combined prompt covering identity-confirmation + vault + multiplayer (Branch A questions 2 + 3) so the user can answer in one reply:
 
 ```
 Using existing identity <slug>@<host> from ~/.config/kunskap/identity.toml.
-Change? (no/Enter/"keep" = continue with this identity; "change" = re-enter)
+
+I just need:
+
+1. Identity confirmation:
+   - keep (default, Enter)        # use <slug>@<host>
+   - change                       # re-enter name + host (overwrites identity.toml)
+
+2. Vault path (the knowledge-base directory).
+   - Bind to an existing kunskap vault?       reply: "use <abs-path>"
+   - Bootstrap a new vault?                   reply: "init <abs-path>"
+   - Default location for a new vault?        reply: "default" (= ~/Projects/<basename(cwd)>-vault)
+
+3. Solo or multiplayer?
+   - Solo (just you):       I'll leave roles at TBD.
+   - Multiplayer (team):    I'll set you as curator + linter primary on this machine.
 ```
 
-- **"no" / "keep" / Enter / "ok" / blank** → continue with the existing identity. Compose `kunskap setup --vault <vault> [--init] [--multiplayer] --yes` (no `--name`/`--host`; the CLI reuses what's on disk).
-- **"change" / "yes"** → ask Branch A's identity question (with the same `whoami` + `hostname -s` defaults), capture `name=<slug>` and `host=<host>`, and compose `kunskap setup --name <slug> --host <host> --vault <vault> [--init] [--multiplayer] --yes`. The `--yes` is required here because the CLI refuses to overwrite an existing identity without it.
-- **Anything else (typo, partial answer)** → reprint the prompt once with the same options. After two unrecognized replies, default to "keep" and explicitly say so before continuing.
-
-Then ask the vault question and the multiplayer question (same as Branch A questions 2 + 3).
+Identity-resolution rules:
+- **"keep" / "no" / Enter / "ok" / blank** → reuse existing identity. Compose `kunskap setup --vault <vault> [--init] [--multiplayer] --yes` (no `--name`/`--host`; the CLI reuses what's on disk).
+- **"change" / "yes"** → ask Branch A's identity question (same `whoami` + `hostname -s` defaults), then compose `kunskap setup --name <slug> --host <host> --vault <vault> [--init] [--multiplayer] --yes`. The `--yes` is required here because the CLI refuses to overwrite an existing identity without it. (Both "change" and "yes" map to the same path — the prompt uses "Change?" so users naturally answer either.)
+- **Anything else** → reprint once with the same options. After two unrecognized replies, default to "keep" and explicitly say so before continuing.
 
 # After the CLI returns
 

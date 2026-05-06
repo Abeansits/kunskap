@@ -2238,8 +2238,13 @@ set_role_primaries() {
   local file="$vault/_meta/roles.toml"
   [[ -f "$file" ]] || die "setup: roles.toml missing at $file (vault not kunskap-init'd?)"
 
+  # Place the tempfile next to the target so the mv is a same-filesystem
+  # rename(2) — actually atomic. Without this, `mktemp -t` lands in TMPDIR
+  # which on macOS is a different filesystem (`/var/folders/...`), and `mv`
+  # falls back to copy+unlink — not atomic, can fail mid-copy under disk
+  # pressure (Pass-2 review finding).
   local out rc=0
-  out="$(mktemp -t kunskap-roles.XXXXXX)"
+  out="$(mktemp "$file.XXXXXX")"
   awk -v ident="$identity" '
     BEGIN { in_curator = 0; in_linter = 0
             saw_curator = 0; saw_linter = 0
@@ -2300,8 +2305,13 @@ cmd_setup() {
     [[ -f "$vault/_meta/kunskap.toml" ]] || die "setup: not a kunskap vault (missing _meta/kunskap.toml): $vault (pass --init to bootstrap)"
     # Refuse mid-rebase / merge / cherry-pick before any mutation — the
     # multiplayer commit + push step would otherwise fail late, leaving
-    # roles.toml staged but un-committed in a wedged repo.
-    [[ -d "$vault/.git" ]] && mid_rebase_guard "$vault" "setup"
+    # roles.toml staged but un-committed in a wedged repo. Worktree-aware
+    # via `rev-parse --is-inside-work-tree` (matches cmd_lint:917) — naive
+    # `[[ -d .git ]]` skips git worktrees where .git is a file pointing at
+    # the worktree's gitdir (Pass-2 review).
+    if git -C "$vault" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+      mid_rebase_guard "$vault" "setup"
+    fi
   fi
 
   local existing_identity=""
@@ -2333,12 +2343,19 @@ cmd_setup() {
     echo "kunskap: setup [2/4] reusing existing vault at $vault"
   fi
 
+  # Worktree-aware: `.git` is a file (not a dir) inside `git worktree add`'d
+  # checkouts, so `[[ -d .git ]]` would skip git worktrees. The repo's
+  # canonical detection helper is `git rev-parse --is-inside-work-tree`
+  # (matches cmd_lint:917; Pass-2 review).
+  local is_git_repo=false
+  git -C "$vault" rev-parse --is-inside-work-tree >/dev/null 2>&1 && is_git_repo=true
+
   if $multiplayer; then
     echo "kunskap: setup [3/4] setting curator + linter primaries to $identity"
     set_role_primaries "$vault" "$identity"
     # Multiplayer on a non-git vault: the mutation succeeded but no commit
     # will fire below. Warn so the user knows to commit + push themselves.
-    [[ -d "$vault/.git" ]] || echo "kunskap: setup: $vault is not a git repo; roles.toml was rewritten but not committed" >&2
+    $is_git_repo || echo "kunskap: setup: $vault is not a git repo; roles.toml was rewritten but not committed" >&2
   else
     echo "kunskap: setup [3/4] skipping multiplayer (roles stay TBD; solo-mode default)"
   fi
@@ -2348,7 +2365,7 @@ cmd_setup() {
   # commit so \`learn status\` reports INBOX: 0 immediately. Plain bind
   # commits only the roles.toml mutation, leaving the user's history alone.
   # Push is best-effort; the no-remote-yet case is silent per Pass-1 review.
-  if [[ -d "$vault/.git" ]]; then
+  if $is_git_repo; then
     local commit_msg=""
     if $do_init; then
       git -C "$vault" add -A
