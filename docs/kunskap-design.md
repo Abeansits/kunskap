@@ -1,14 +1,8 @@
 ---
 title: Kunskap — Technical Design (v1)
 created: 2026-05-04
-authors: vigil (drafted), sebastian (commissioned)
-status: draft-2 (post two-pass midflight review — codex unavail, oz subbed)
-predecessor: state.json#kunskap_project (decisions locked)
-contract: ~/.vigil-vault/raw/inbox/idea-knowledge-base-anchors-2026-05-03.md
-review_passes:
-  pass1_factual: oz @ 2026-05-04 — flagged hooks.json wrapper, agent frontmatter, marketplace path
-  pass2_bear:    oz @ 2026-05-04 — recommended dropping advisory lock; folded
-v0_recipe_note: ~/.vigil-vault/raw/inbox/learning-kunskap-v0-librarian-pass-2026-05-03.md (LANDED, 354 lines, fold-in done; v0 stats: 13 inbox notes → 6 learnings + 7 concept stubs + 2 ideas + 6 drafts + 1 pattern edit; commit 09f4711)
+status: shipped (v1.0; this doc captures the design as locked at P0)
+lineage: sibling to Vigil / Sigil / Ting
 ---
 
 # Kunskap — Technical Design
@@ -22,7 +16,7 @@ Kunskap is a Claude Code plugin that turns any directory into a curator-managed 
 From `state.json#kunskap_project.design_decisions_locked` + the contract docs. Treated as fixed.
 
 1. **Name + family.** Kunskap (Swedish, "knowledge"). Sibling to Vigil/Sigil/Ting.
-2. **Three-repo split.** `~/.vigil-vault/` (solo, stays) + `kunskap/` (content-free plugin, public-ish) + `kunskap-research/` (private vault, Sebastian/Paul/Matt).
+2. **Three-repo split.** `<personal-vault>/` (solo, stays) + `kunskap/` (content-free plugin, public-ish) + `<team-vault>/` (private vault, the team).
 3. **Architecture per Karpathy.** `raw/inbox/` → LLM-compiled wiki of prose articles with `[[wikilinks]]` + `## Sources` provenance. Not bullet-lists. LLM owns the wiki; humans read.
 4. **Distribution per omarsar0.** Claude Code Skill model; auto-load by description.
 5. **Search v1 = `rg` + Obsidian CLI + Bases.** No custom RAG, embeddings, or vector DB.
@@ -41,7 +35,7 @@ From `state.json#kunskap_project.design_decisions_locked` + the contract docs. T
 
 CLI-alone loses in-session integration (skills, hooks). Plugin-alone re-implements routing in three skills. Two repos = engineering tax. Reject all three.
 
-**Contract for Paul / Matt**: contributing requires Claude Code + the Kunskap plugin. Reading the vault requires only Obsidian — the wiki is plain markdown.
+**Contract for contributors**: contributing requires Claude Code + the Kunskap plugin. Reading the vault requires only Obsidian — the wiki is plain markdown.
 
 **Cron deferred.** GitHub Actions on the shared vault repo is the v2 path if/when "curation should fire while everyone is offline" becomes a real need. `bin/kunskap curate` is already designed to run headlessly, so v2 = a workflow file, not a re-architecture.
 
@@ -96,7 +90,7 @@ kunskap/                                       # repo root (public-ish, content-
 **Mandatory:** `.claude-plugin/plugin.json`, `skills/kunskap-vault/SKILL.md`, `commands/learn.md`, `bin/kunskap`. Everything else is optional in the manifest sense (auto-discovery; absent dirs are simply skipped).
 
 **Pieces I considered and rejected:**
-- `.mcp.json`. Tempting to wire `obsidian-vigil` MCP through here, but that MCP is per-machine (already at user scope), not per-plugin. Don't double-wire. Skip.
+- `.mcp.json`. Tempting to wire an obsidian MCP through here, but those servers are typically per-machine (user scope), not per-plugin. Don't double-wire. Skip.
 - `monitors/`. Could watch `raw/inbox/` and notify Claude when new files arrive — clean idea but premature; nothing actionable until the curator runs anyway. Defer.
 - `settings.json`. Lets the plugin set a default agent. We don't want to override the user's main thread. Skip.
 
@@ -115,7 +109,7 @@ Behaviour:
 1. Reject if `<path>` exists and is non-empty (prompt to confirm if `--force`).
 2. `mkdir -p <path>` and copy `templates/vault-init/` into it. Substitute `{{name}}` and `{{created}}` in `_meta/kunskap.toml`, `wiki/_index.md`, `README.md`.
 3. `git init` in `<path>`.
-4. If `--shared <remote>`: `git remote add origin <remote>`. Set `_meta/kunskap.toml#shared = true`. Without `--shared` the vault is solo (matches `~/.vigil-vault/`).
+4. If `--shared <remote>`: `git remote add origin <remote>`. Set `_meta/kunskap.toml#shared = true`. Without `--shared` the vault is solo.
 5. Drop a sample inbox note (`raw/inbox/example-2026-05-04.md`) and a sample wiki article (`wiki/learnings/example-topic.md`) so users see the shape without running the curator.
 6. Print a one-screen "next steps" panel: `cd <path> && kunskap status` and "to enable in a project: cd <project>; /kunskap:learn enable --vault <path>".
 
@@ -138,11 +132,11 @@ draft_review = "human"             # who reviews wiki/_drafts (right now: human,
 
 ```toml
 [roles.curator]
-primary = "sebastian@laptop"       # identity-string, format: <user>@<host>; only this machine runs curator
+primary = "alice@laptop"           # identity-string, format: <user>@<host>; only this machine runs curator
 # fallback intentionally absent in v1; see §Q4 for why
 
 [roles.linter]
-primary = "matt@desktop"
+primary = "bob@desktop"
 ```
 
 No `schedule` field in v1 — v1 fires on demand via `/kunskap:curate` and `/kunskap:lint`. v2 may add a launchd/systemd installer that fires on the primary machine only; the `schedule` field gets reintroduced then.
@@ -153,18 +147,18 @@ No `schedule` field in v1 — v1 fires on demand via `/kunskap:curate` and `/kun
 
 **Single-primary, no fallback, no advisory lock. Manual firing only. GH Actions deferred.**
 
-(Revised after pass-2 review. Original draft had primary+fallback + an in-vault advisory lock acquired by commit-and-push. Pass 2 surfaced a TOCTOU race: two machines that both pull-clean and both write `_meta/curator.lock` end the loser's `git pull --rebase` in a YAML conflict on the lock file itself, leaving the vault mid-rebase. The "git lfs lock" comparison was wrong — git lfs uses an atomic server endpoint, not file-plus-commit. Mechanism dropped.)
+An earlier draft tried in-vault advisory locks acquired by commit-and-push. That has a TOCTOU race: two machines that both pull-clean and both write `_meta/curator.lock` end the loser's `git pull --rebase` in a YAML conflict on the lock file itself, leaving the vault mid-rebase. (The "git lfs lock" comparison was wrong — git lfs uses an atomic server endpoint, not file-plus-commit.) Mechanism dropped.
 
 **Mechanism**:
 1. `_meta/roles.toml` — exactly one `primary` per role, no fallback.
 2. CLI refuses to run unless `kunskap whoami == roles.<role>.primary`, except with `--force` (interactive confirmation + `forced=true` in the run record).
 3. After every run the curator writes `_meta/last-run.json` (informational, not gating):
    ```json
-   { "curator": { "ran_at": "...", "by": "sebastian@laptop", "inbox_processed": 7, "articles_written": 3, "drafts_routed": 1 } }
+   { "curator": { "ran_at": "...", "by": "alice@laptop", "inbox_processed": 7, "articles_written": 3, "drafts_routed": 1 } }
    ```
 4. No scheduler in v1. Fires only via `/kunskap:curate` or `kunskap curate --vault <path>`.
 
-**Why this is enough for 3 people**: with one primary firing manually, contention requires Sebastian to fire two runs at the same second. If that happens, both run on a stale snapshot, the second push fails non-fast-forward, second run aborts cleanly (no half-rebased state, because there's no shared file both are racing on). Sebastian offline = no curation that night, inbox grows, curator catches up next time. Hand-off = edit `roles.toml`, commit, push. No locks to drain.
+**Why this is enough for a small team**: with one primary firing manually, contention requires the primary to fire two runs at the same second. If that happens, both run on a stale snapshot, the second push fails non-fast-forward, second run aborts cleanly (no half-rebased state, because there's no shared file both are racing on). Primary offline = no curation that night, inbox grows, curator catches up next time. Hand-off = edit `roles.toml`, commit, push. No locks to drain.
 
 **Personal vault** (`shared = false`): roles file ignored, identity check skipped, never pushes. Contention impossible (one machine).
 
@@ -224,7 +218,7 @@ grep -roh '\[\[[^]]*\]\]' wiki/learnings/*.md wiki/ideas/*.md \
 | `kunskap drafts reject <id> --reason "<why>"` | Move to `Archives/processed-drafts/rejected/{id}.md` with a reason header. The rejection itself is the "humans saw this" signal. |
 | `kunskap drafts defer <id>` | Stamp `deferred_at: <iso>` in frontmatter; leave in `_drafts/`. The linter surfaces drafts deferred ≥14 days. |
 
-This pulls heavily from the existing `/drafts` surface in `~/.agent-deck/conductor/ops/CLAUDE.md` (already production-tested for Sebastian's solo flow). v1 ports that surface into the plugin.
+This pulls heavily from a prior `/drafts` surface (proven in solo flow). v1 ports that surface into the plugin.
 
 The linter's weekly run includes a "drafts staleness" check: any draft `created` ≥ 7 days ago shows up in the linter report.
 
@@ -241,8 +235,8 @@ Writes:
 ```toml
 # ~/.config/kunskap/identity.toml
 [user]
-name  = "sebastian"                # the slug. used as `author:` in inbox notes.
-email = "seb@example.com"          # optional, only used in vault git commits
+name  = "alice"                    # the slug. used as `author:` in inbox notes.
+email = "alice@example.com"        # optional, only used in vault git commits
 host  = "laptop"                   # optional override; default = `hostname -s`
 ```
 
@@ -291,7 +285,7 @@ The pass-1 review flagged that the original draft's top-level `description` fiel
 
 **SessionEnd matcher values** (per the canonical hooks reference, surfaced in pass-1): `clear`, `resume`, `logout`, `prompt_input_exit`, `bypass_permissions_disabled`, `other`. v1 uses `"*"` (fire on all of them); a v2 refinement could use `prompt_input_exit|other` to skip `clear` (which doesn't really mean session over) — defer until we observe noise.
 
-**Hook reliability is best-effort, not guaranteed.** The canonical reference is silent on whether `SessionEnd` fires on SIGKILL, whether Claude Code waits for the hook, and whether per-handler timeouts are enforced. The v0 SessionEnd contract elsewhere in this doc treats inbox sync as best-effort: if the hook doesn't fire (hard kill, OS forced shutdown), the inbox capture is in the local vault but unpushed. The next session-start `git pull --rebase` doesn't lose it; the next session-end pushes it. Document this clearly to Paul + Matt: **closing your laptop with a kunskap session running is fine; SIGKILL'ing the Claude Code process loses that session's inbox commit until next session-end**.
+**Hook reliability is best-effort, not guaranteed.** The canonical reference is silent on whether `SessionEnd` fires on SIGKILL, whether Claude Code waits for the hook, and whether per-handler timeouts are enforced. The v0 SessionEnd contract elsewhere in this doc treats inbox sync as best-effort: if the hook doesn't fire (hard kill, OS forced shutdown), the inbox capture is in the local vault but unpushed. The next session-start `git pull --rebase` doesn't lose it; the next session-end pushes it. Document this clearly to users: **closing your laptop with a kunskap session running is fine; SIGKILL'ing the Claude Code process loses that session's inbox commit until next session-end**.
 
 No `UserPromptSubmit` hook in v1. The temptation is to inject "search vault first" reminders, but that's exactly the kind of noise the v0 librarian session is testing whether the curator surfaces naturally. Hold for v2.
 
@@ -364,7 +358,7 @@ exit 0
 
 ### v1 path: Anthropic plugin marketplace, private repo
 
-Per the canonical docs, `/plugin marketplace add <github-shorthand>` resolves a marketplace by GitHub shorthand, and marketplaces can be private (`/en/plugin-marketplaces#private-repositories`). For a 3-person team this is the lowest-friction path: one repo (`kunskap-marketplace`, separate from the plugin repo), and Paul/Matt run one command.
+Per the canonical docs, `/plugin marketplace add <github-shorthand>` resolves a marketplace by GitHub shorthand, and marketplaces can be private (`/en/plugin-marketplaces#private-repositories`). For a small team this is the lowest-friction path: one repo (`kunskap-marketplace`, separate from the plugin repo), and contributors run one command.
 
 **Marketplace file path matters.** The marketplace manifest lives at `.claude-plugin/marketplace.json` *inside* the marketplace repo (not bare `marketplace.json` at the repo root). Pass-1 review flagged the original draft missed this. Layout:
 
@@ -391,24 +385,24 @@ The `marketplace.json` content lists the kunskap plugin and its source repo. See
     /plugin install kunskap@kunskap-marketplace
 
 ## Configure your identity (one-time, per machine)
-    kunskap config user --name paul --email paul@example.com --host desktop
+    kunskap config user --name alice --email alice@example.com --host laptop
 
 (The explicit --host avoids breakage if your machine gets renamed; see "Identity fragility" in the design doc.)
 
 ## Enable in a project
-    cd ~/Projects/hyperspectral-poc
+    cd ~/Projects/research-poc
     /kunskap:learn enable --vault ~/Projects/kunskap-research
     # confirms vault path before writing the marker; cancel if it's wrong
 
 ## Verify
     /kunskap:learn status
-    # → enabled  vault: ~/Projects/kunskap-research  identity: paul@desktop  shared: true
-    #   role-check: not primary curator (sebastian@laptop is); curator runs by Sebastian only
+    # → enabled  vault: ~/Projects/kunskap-research  identity: alice@laptop  shared: true
+    #   role-check: not primary curator (bob@desktop is); curator runs by bob only
 ```
 
 ### Fallbacks
 
-- **Local clone for plugin development.** `git clone … kunskap && claude --plugin-dir ./kunskap` (per `/en/plugins#test-your-plugins-locally`). This is the path Sebastian/Vigil will use during PR0–P2.
+- **Local clone for plugin development.** `git clone … kunskap && claude --plugin-dir ./kunskap` (per `/en/plugins#test-your-plugins-locally`). This is the path used during plugin development (PR0–P2).
 - **Manual install (no marketplace).** `git clone …/kunskap ~/.claude/plugins/cache/local/kunskap && /plugin enable kunskap`. Documented as escape-hatch only.
 
 ---
@@ -437,7 +431,7 @@ kunskap recall <query> [--author X] [--tag Y] [--vault <path>] [--limit N]
 
 ### Why not Bases here
 
-Bases is an Obsidian-internal view system (YAML-defined filters and formulas, evaluated by Obsidian itself; per [obsidian.md/help/bases/syntax](https://obsidian.md/help/bases/syntax)). It's amazing for *humans browsing in Obsidian* — set up a "all hyperspectral notes by Paul, last 30 days" view once, click it forever. But it doesn't expose a CLI/programmatic surface. So Bases is a **vault-side artifact**, not a Kunskap CLI primitive: ship a few canonical Bases (`bases/hyperspectral.base`, `bases/by-author.base`) inside `templates/vault-init/` and let humans use them via the Obsidian UI. Don't try to replicate Bases in `kunskap recall`.
+Bases is an Obsidian-internal view system (YAML-defined filters and formulas, evaluated by Obsidian itself; per [obsidian.md/help/bases/syntax](https://obsidian.md/help/bases/syntax)). It's amazing for *humans browsing in Obsidian* — set up a "all <topic> notes by <author>, last 30 days" view once, click it forever. But it doesn't expose a CLI/programmatic surface. So Bases is a **vault-side artifact**, not a Kunskap CLI primitive: ship a few canonical Bases (`bases/by-topic.base`, `bases/by-author.base`) inside `templates/vault-init/` and let humans use them via the Obsidian UI. Don't try to replicate Bases in `kunskap recall`.
 
 ---
 
@@ -484,11 +478,11 @@ PR-by-PR breakdown, mirroring the bridge-routing-design discipline. Each PR is i
 | PR | Scope | Gates on |
 |---|---|---|
 | **P0 — scaffold** | `kunskap/` repo created. Plugin manifest, empty skill/`commands` placeholders, `bin/kunskap` stub that prints version. `kunskap config user`. CI that lints `plugin.json` against schema, validates `hooks/hooks.json` against the canonical reference, and runs shellcheck on `bin/kunskap`. | — |
-| **P1 — curator agent + manual trigger + curator-contract tests** | `agents/curator.md` filled in from v0 librarian recipe note (or, fallback, written cold from §Curator contract — Sebastian's call at P1 kick-off). `commands/curate.md` invokes it. `bin/kunskap curate --vault <path>` runs the same agent headlessly via `claude --plugin-dir`. **Critically**: ship a fixture-based test suite that asserts the §Curator contract rules hold — preserve hand-edits, atomic per-article commit, route-decision determinism on a frozen inbox set. No hooks, no roles, no lock — fires on demand only. Tested against `~/.vigil-vault/` (whose 13-note inbox is the smoke set). | P0; v0 librarian recipe note (`learning-kunskap-v0-librarian-pass-2026-05-03.md`) **OR** explicit Sebastian decision to proceed without it |
+| **P1 — curator agent + manual trigger + curator-contract tests** | `agents/curator.md` filled in from v0 librarian recipe note (or, fallback, written cold from §Curator contract — judgment call at P1 kick-off). `commands/curate.md` invokes it. `bin/kunskap curate --vault <path>` runs the same agent headlessly via `claude --plugin-dir`. **Critically**: ship a fixture-based test suite that asserts the §Curator contract rules hold — preserve hand-edits, atomic per-article commit, route-decision determinism on a frozen inbox set. No hooks, no roles, no lock — fires on demand only. Tested against a real personal vault (whose 13-note inbox is the smoke set). | P0; v0 librarian recipe note **OR** explicit decision to proceed without it |
 | **P2 — opt-in + sync hooks** | `commands/learn.md` (`enable/disable/status`, with vault confirmation prompt). `.claude/kunskap.json` marker (with `confirmed_at` timestamp). `hooks/hooks.json` + `session-start.sh` + `session-end.sh`. Personal-vault path verified (no push). Identity-mismatch banner in `status`. | P1 |
-| **P3 — vault bootstrap + drafts surface** | `bin/kunskap init`, `templates/vault-init/`. `commands/drafts.md` (list/show/approve/reject/defer) — port from conductor `CLAUDE.md`. New shared vault stood up by Sebastian + cloned by Paul + Matt as the smoke-test. Sample article + sample inbox note land. | P2; Paul + Matt have Claude Code installed |
+| **P3 — vault bootstrap + drafts surface** | `bin/kunskap init`, `templates/vault-init/`. `commands/drafts.md` (list/show/approve/reject/defer) — port from conductor `CLAUDE.md`. New shared vault stood up by the curator-primary + cloned by team members as the smoke-test. Sample article + sample inbox note land. | P2; team members have Claude Code installed |
 | **P4 — linter agent** | `agents/linter.md`, `commands/lint.md`, `bin/kunskap lint`. Health checks: drift, missing connections, drafts staleness (≥7d), offline-machine arrivals (≥48h), curator-not-run (≥2d), identity-mismatch surfaces. Fires manually first. | P3; vault has ≥10 wiki articles to lint over |
-| **P5 — role assignment (single primary)** | `_meta/roles.toml` (single `primary` per role, no fallback). `bin/kunskap curate` honours the role check. `_meta/last-run.json` recording. **No advisory lock** — see §Q4 for why the lock variant was dropped. Two-machine smoke-test = Sebastian's laptop fires, Sebastian's other machine declines with "not primary, use --force to override." | P4 |
+| **P5 — role assignment (single primary)** | `_meta/roles.toml` (single `primary` per role, no fallback). `bin/kunskap curate` honours the role check. `_meta/last-run.json` recording. **No advisory lock** — see §Q4 for why the lock variant was dropped. Two-machine smoke-test = primary machine fires, secondary machine declines with "not primary, use --force to override." | P4 |
 | **P6 — search + polish** | `commands/recall.md`, `bin/kunskap recall`, `--format json` for agent calls. **Smoke-test the Obsidian CLI integration** with a real Obsidian 1.12 install (per §Q8 unverified flag). README finalized. Marketplace listing (`.claude-plugin/marketplace.json` in the marketplace repo). | P5 |
 
 **P0 → P3 is the MVP.** P4 and P5 are quality-of-life. P6 is reach. If something has to be cut to ship, cut from the P6 end. **P1 contains the load-bearing testing work** — if the curator-contract tests aren't rigorous, every later phase is built on guesswork.
@@ -497,27 +491,27 @@ PR-by-PR breakdown, mirroring the bridge-routing-design discipline. Each PR is i
 
 ## Risks & open flags
 
-1. **v0 recipe note: LANDED ✓** at `~/.vigil-vault/raw/inbox/learning-kunskap-v0-librarian-pass-2026-05-03.md` (354 lines, commit 09f4711). Findings folded into §Curator contract (5 norms + 13 prompt rules + stub recipe) and §CLI primitives. P1 is no longer gated on this note.
+1. **v0 recipe note: folded.** A v0 librarian recipe (354 lines) was folded into §Curator contract (5 norms + 13 prompt rules + stub recipe) and §CLI primitives at design time.
 
-2. **Obsidian CLI partially unverified (pass 1).** `obsidian.md/help/cli` 404'd at fetch time. The "must be running" constraint is consistent with how the CLI works (IPC to desktop) and with kepano/obsidian-skills, but the §Q8 search-flag syntax (`query="..."`, `format=json`) is not confirmed and must be smoke-tested at P6. Search v1 carries on `rg`; Obsidian is best-effort.
+2. **Obsidian CLI partially unverified.** `obsidian.md/help/cli` 404'd at fetch time. The "must be running" constraint is consistent with how the CLI works (IPC to desktop) and with kepano/obsidian-skills, but the §Q8 search-flag syntax (`query="..."`, `format=json`) is not confirmed and must be smoke-tested at P6. Search v1 carries on `rg`; Obsidian is best-effort.
 
-3. **Hand-edit overwrite (pass-2).** §Curator contract's "preserve hand edits" rule is a *prompt* rule, not framework-enforced. P1 must include a regression test: hand-edit a wiki article, run curator with related new inbox notes, assert the edit survives. Fallback if the prompt can't reliably honor this: pre-commit hook that refuses hand-edits to `wiki/` outside `_drafts/`.
+3. **Hand-edit overwrite.** §Curator contract's "preserve hand edits" rule is a *prompt* rule, not framework-enforced. P1 must include a regression test: hand-edit a wiki article, run curator with related new inbox notes, assert the edit survives. Fallback if the prompt can't reliably honor this: pre-commit hook that refuses hand-edits to `wiki/` outside `_drafts/`.
 
-4. **Matt-offline-for-a-week (pass-2).** Matt's session-end commits accumulate locally; on reconnect, his notes pile in but the curator already ran all week without them. His contributions get curated in isolation = thin/duplicate articles. Mitigation: the linter flags inbox notes from authors not seen in `_meta/last-run.json` for ≥48h and biases next curator run toward re-reading related existing articles. Document for users: closing your laptop is fine; >48h offline = catch-up mode.
+4. **Offline-contributor-for-a-week.** A contributor's session-end commits accumulate locally; on reconnect, their notes pile in but the curator already ran all week without them. Their contributions get curated in isolation = thin/duplicate articles. Mitigation: the linter flags inbox notes from authors not seen in `_meta/last-run.json` for ≥48h and biases next curator run toward re-reading related existing articles. Document for users: closing your laptop is fine; >48h offline = catch-up mode.
 
-5. **Identity fragility (pass-2).** `hostname -s` is volatile; mismatched identity-strings silently break role checks. v1 mitigation in §Q5 (explicit `--host`, status cross-check, linter health-check). Document in README.
+5. **Identity fragility.** `hostname -s` is volatile; mismatched identity-strings silently break role checks. v1 mitigation in §Q5 (explicit `--host`, status cross-check, linter health-check). Document in README.
 
 6. **GitHub Actions cron deferred.** When "fire curator while everyone offline" becomes a real need, the path is GH Actions running `kunskap curate` on the shared vault repo. `bin/kunskap` already runs headlessly. When added: single-primary-OR-GH-Actions, never both fired in the same window.
 
-7. **Vault-leak between projects (pass-2).** Project `enable`-d against the wrong vault leaks across boundaries (personal notes → research vault, or vice versa). v1 mitigations: `kunskap init` + `/kunskap:learn enable` confirm the path before writing the marker; `.claude/kunskap.json` includes `confirmed_at` and `/kunskap:learn status` warns on >30d staleness; the skill description tells Claude to filter inbox notes for non-research content. Discipline-first; revisit if month-3 shows leakage in practice.
+7. **Vault-leak between projects.** Project `enable`-d against the wrong vault leaks across boundaries (personal notes → research vault, or vice versa). v1 mitigations: `kunskap init` + `/kunskap:learn enable` confirm the path before writing the marker; `.claude/kunskap.json` includes `confirmed_at` and `/kunskap:learn status` warns on >30d staleness; the skill description tells Claude to filter inbox notes for non-research content. Discipline-first; revisit if month-3 shows leakage in practice.
 
 8. **Marketplace privacy.** Plugin repo (`kunskap/`) and marketplace repo can be public. Vault repo (`kunskap-research/`) **must** be private. Document the wrong-remote risk in README at P0.
 
-9. **Curator contract testability (pass-2 biggest hole).** Each rule in §Curator contract should map to a P1 test case. If P1 ships without those tests, the contract is decoration and the design is back where draft 1 was.
+9. **Curator contract testability.** Each rule in §Curator contract should map to a P1 test case. If P1 ships without those tests, the contract is decoration and the design is back where draft 1 was.
 
 ---
 
-## Open decisions for Sebastian
+## Open decisions (snapshot at design time)
 
 From v0 recipe §7 — items that don't fold cleanly into a design choice. Each has a recommendation; gate at `[KUNSKAP-DESIGN-READY]` if any of them needs a different call.
 
