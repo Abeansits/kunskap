@@ -30,14 +30,14 @@ jobs:
 
       # ---------- bin/kunskap surface health ----------
 
-      - name: bin/kunskap version matches manifest (v1.0)
+      - name: bin/kunskap version matches manifest (v1.0.x)
         run: |
           manifest=$(jq -r .version .claude-plugin/plugin.json)
           out=$(./bin/kunskap version)
           [[ "$out" == "kunskap $manifest" ]] \
             || { echo "drift: bin says '$out', plugin.json says '$manifest'"; exit 1; }
-          [[ "$manifest" == "1.0.0" ]] \
-            || { echo "drift: P6 must ship at v1.0.0 (got '$manifest')"; exit 1; }
+          [[ "$manifest" =~ ^1\.0\.[0-9]+$ ]] \
+            || { echo "drift: P6 must ship in the v1.0.x line (got '$manifest')"; exit 1; }
 
       - name: bin/kunskap help advertises P6 recall surface
         run: |
