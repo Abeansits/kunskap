@@ -1,6 +1,6 @@
 # Kunskap
 
-[![CI](https://github.com/Abeansits/kunskap/actions/workflows/p6.yml/badge.svg)](https://github.com/Abeansits/kunskap/actions)
+[![CI](https://github.com/Abeansits/kunskap/actions/workflows/ci.yml/badge.svg)](https://github.com/Abeansits/kunskap/actions)
 [![Latest release](https://img.shields.io/github/v/release/Abeansits/kunskap?display_name=tag)](https://github.com/Abeansits/kunskap/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Claude Code Plugin](https://img.shields.io/badge/Claude%20Code-Plugin-blueviolet.svg)](https://docs.claude.com/en/docs/claude-code/plugins)

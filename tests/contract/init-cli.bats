@@ -230,6 +230,24 @@ teardown() {
   [[ "$output" == *"_meta/roles.toml"* ]]
 }
 
+@test "init next-steps panel explains role config WHY + HOW (v1.1.1)" {
+  run "$KUNSKAP_BIN" init "$TMPTARGET" --name "Panel WhyHow"
+  [[ "$status" -eq 0 ]] || { echo "$output"; return 1; }
+  # WHY: invariant phrase the v1.1.1 brief locks in.
+  [[ "$output" == *"single-primary contract"* ]] \
+    || { echo "$output"; return 1; }
+  # HOW: the slug-discovery hint must mention `kunskap whoami`.
+  [[ "$output" == *"kunskap whoami"* ]] \
+    || { echo "$output"; return 1; }
+  # HOW: commit-and-push trio that lets teammates pick up the assignment.
+  [[ "$output" == *"git add"* ]] \
+    || { echo "$output"; return 1; }
+  [[ "$output" == *"commit"* ]] \
+    || { echo "$output"; return 1; }
+  [[ "$output" == *"push"* ]] \
+    || { echo "$output"; return 1; }
+}
+
 @test "init rejects --name containing a quote (substitution safety)" {
   run "$KUNSKAP_BIN" init "$TMPTARGET" --name 'has"quote'
   [[ "$status" -ne 0 ]]

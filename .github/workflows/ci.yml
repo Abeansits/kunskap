@@ -1,0 +1,612 @@
+name: CI
+
+# Consolidated v1.1.1: replaces the seven phase-named workflows
+# (p0.yml..p6.yml) shipped during the P0–P6 chain. Every job, step,
+# bats suite, e2e, drift-lint, and fingerprint check from the prior
+# workflows is reproduced below — losing one would silently weaken CI
+# coverage on future PRs. Surfaces grouped into three jobs:
+#
+#   manifest   — fast manifest + CLI argparse contracts (P0 surface)
+#   shellcheck — bin/kunskap + every hook script (cumulative)
+#   contract   — bats suites, agent/command/template shape, e2e flows,
+#                drift lints, static-prompt fingerprint collision detector
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash -euo pipefail {0}
+
+jobs:
+  # ------------------------------------------------------------------
+  # manifest — what was P0. Fast path: no bats install. Validates the
+  # plugin manifest schema, bin/kunskap argparse contracts, and the
+  # config / whoami round-trip without touching the heavier suites.
+  # ------------------------------------------------------------------
+  manifest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: parse plugin.json
+        run: jq empty .claude-plugin/plugin.json
+
+      - name: required + expected manifest fields
+        run: |
+          for field in name version description author license; do
+            jq -e ". | has(\"$field\")" .claude-plugin/plugin.json >/dev/null \
+              || { echo "missing field: $field"; exit 1; }
+          done
+          jq -e '.author.name | type == "string"' .claude-plugin/plugin.json >/dev/null \
+            || { echo "author.name missing or not a string"; exit 1; }
+          name=$(jq -r .name .claude-plugin/plugin.json)
+          [[ "$name" =~ ^[a-z][a-z0-9-]*$ ]] \
+            || { echo "name '$name' is not kebab-case lowercase"; exit 1; }
+          echo "manifest OK: $name $(jq -r .version .claude-plugin/plugin.json)"
+
+      - name: bin/kunskap is executable
+        run: test -x bin/kunskap
+
+      # P6 added the v1.x.y semver gate. Strictest version of the
+      # version-vs-manifest check — we keep it as the canonical one.
+      - name: version (matches plugin.json + v1.x.y semver)
+        run: |
+          manifest=$(jq -r .version .claude-plugin/plugin.json)
+          out=$(./bin/kunskap version)
+          [[ "$out" == "kunskap $manifest" ]] \
+            || { echo "drift: bin says '$out', plugin.json says '$manifest'"; exit 1; }
+          [[ "$manifest" =~ ^1\.[0-9]+\.[0-9]+$ ]] \
+            || { echo "drift: must ship in the v1.x.y line (got '$manifest')"; exit 1; }
+
+      - name: help exits 0
+        run: ./bin/kunskap help >/dev/null
+
+      - name: whoami without identity is silent and non-zero under --quiet
+        run: |
+          rc=0; out=$(./bin/kunskap whoami --quiet 2>&1) || rc=$?
+          [[ $rc -ne 0 ]] || { echo "expected non-zero exit; got $rc"; exit 1; }
+          [[ -z "$out" ]] || { echo "expected silent; got: $out"; exit 1; }
+
+      - name: config user round-trips through whoami
+        run: |
+          ./bin/kunskap config user --name ci --email ci@example.com --host runner
+          out=$(./bin/kunskap whoami)
+          [[ "$out" == "ci@runner" ]] || { echo "got: $out"; exit 1; }
+
+      - name: config show prints identity file
+        run: |
+          show=$(./bin/kunskap config show)
+          echo "$show" | grep -q '^name  = "ci"$'
+          echo "$show" | grep -q '^host  = "runner"$'
+
+      - name: config user without --host emits Risk #5 warning
+        run: |
+          stderr=$(./bin/kunskap config user --name ci 2>&1 >/dev/null)
+          echo "$stderr" | grep -q "explicit --host recommended" \
+            || { echo "expected Risk #5 warning; got: $stderr"; exit 1; }
+
+      - name: rejects bogus --name
+        run: |
+          rc=0; ./bin/kunskap config user --name "not a slug" 2>/dev/null || rc=$?
+          [[ $rc -ne 0 ]] || { echo "expected non-zero exit; got $rc"; exit 1; }
+
+      - name: rejects uppercase --name (Paul/paul collision pre-empt)
+        run: |
+          rc=0; stderr=$(./bin/kunskap config user --name Paul --host runner 2>&1 >/dev/null) || rc=$?
+          [[ $rc -ne 0 ]] || { echo "expected non-zero exit"; exit 1; }
+          echo "$stderr" | grep -q "lowercase" \
+            || { echo "expected lowercase msg; got: $stderr"; exit 1; }
+
+      - name: --name missing value gives a helpful error (not silent set -e)
+        run: |
+          rc=0; stderr=$(./bin/kunskap config user --name 2>&1 >/dev/null) || rc=$?
+          [[ $rc -ne 0 ]] || { echo "expected non-zero exit"; exit 1; }
+          echo "$stderr" | grep -q "requires a value" \
+            || { echo "expected 'requires a value' msg; got: $stderr"; exit 1; }
+
+      - name: rejects --email containing quotes (TOML integrity)
+        run: |
+          rc=0; stderr=$(./bin/kunskap config user --name ci --host runner --email 'a"b@x' 2>&1 >/dev/null) || rc=$?
+          [[ $rc -ne 0 ]] || { echo "expected non-zero exit"; exit 1; }
+          echo "$stderr" | grep -q "quote, backslash, or newline" \
+            || { echo "expected email-quote msg; got: $stderr"; exit 1; }
+
+      - name: rejects flag-as-value (--host swallowing --email — Pass-2 block-ship)
+        run: |
+          rc=0; stderr=$(./bin/kunskap config user --name foo --host --email 2>&1 >/dev/null) || rc=$?
+          [[ $rc -ne 0 ]] || { echo "expected non-zero exit"; exit 1; }
+          echo "$stderr" | grep -q "got next flag: --email" \
+            || { echo "expected next-flag msg; got: $stderr"; exit 1; }
+
+      - name: whoami rejects unexpected positional args
+        run: |
+          rc=0; stderr=$(./bin/kunskap whoami extra 2>&1 >/dev/null) || rc=$?
+          [[ $rc -ne 0 ]] || { echo "expected non-zero exit"; exit 1; }
+          echo "$stderr" | grep -q "no positional arguments" \
+            || { echo "expected positional msg; got: $stderr"; exit 1; }
+          rc=0; stderr=$(./bin/kunskap whoami --quiet extra 2>&1 >/dev/null) || rc=$?
+          [[ $rc -ne 0 ]] || { echo "expected non-zero exit on --quiet+extra"; exit 1; }
+
+      - name: config show rejects unexpected args
+        run: |
+          rc=0; stderr=$(./bin/kunskap config show extra 2>&1 >/dev/null) || rc=$?
+          [[ $rc -ne 0 ]] || { echo "expected non-zero exit"; exit 1; }
+          echo "$stderr" | grep -q "takes no arguments" \
+            || { echo "expected no-args msg; got: $stderr"; exit 1; }
+
+  # ------------------------------------------------------------------
+  # shellcheck — the cumulative shell-lint surface from P2..P6. Runs
+  # in parallel with manifest for fast feedback.
+  # ------------------------------------------------------------------
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: shellcheck bin/kunskap + hooks
+        run: |
+          shellcheck -e SC1090,SC1091 bin/kunskap hooks/session-start.sh hooks/post-write-sync.sh
+          shellcheck hooks/_shared.sh
+
+  # ------------------------------------------------------------------
+  # contract — every bats suite, every e2e, every agent/command/
+  # template shape check, every drift lint, the static-prompt
+  # fingerprint substring-collision detector. The heavy job — runs
+  # in parallel with manifest + shellcheck.
+  # ------------------------------------------------------------------
+  contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install bats + jq + ripgrep
+        run: sudo apt-get update -qq && sudo apt-get install -y bats jq ripgrep
+
+      # ---------- bin/kunskap surface health (cumulative help advert) ----------
+
+      - name: bin/kunskap help mentions learn + config get (P2)
+        run: |
+          ./bin/kunskap help | grep -q 'learn enable'
+          ./bin/kunskap help | grep -q 'learn disable'
+          ./bin/kunskap help | grep -q 'learn status'
+          ./bin/kunskap help | grep -q 'config get <key>'
+
+      - name: bin/kunskap help mentions init + drafts (P3)
+        run: |
+          ./bin/kunskap help | grep -q 'kunskap init <path>'
+          ./bin/kunskap help | grep -q 'kunskap drafts list'
+          ./bin/kunskap help | grep -q 'kunskap drafts show'
+          ./bin/kunskap help | grep -q 'kunskap drafts approve'
+          ./bin/kunskap help | grep -q 'kunskap drafts reject'
+          ./bin/kunskap help | grep -q 'kunskap drafts defer'
+
+      - name: bin/kunskap help advertises lint (P4)
+        run: |
+          ./bin/kunskap help | grep -q 'kunskap lint'
+          ./bin/kunskap help | grep -q 'Read-only'
+          ./bin/kunskap help | grep -q 'git status --porcelain'
+
+      - name: bin/kunskap help advertises P5 surface (--force / --yes)
+        run: |
+          ./bin/kunskap help | grep -q 'curate --vault <abs-path> \[--check\] \[--force\] \[--yes\]'
+          ./bin/kunskap help | grep -q 'lint   \[--vault <abs-path>\] \[--format text|json\] \[--force\] \[--yes\]'
+          ./bin/kunskap help | grep -q 'single-primary'
+          ./bin/kunskap help | grep -q 'forced=true'
+          ./bin/kunskap help | grep -q 'sandbox-CWD bug fix'
+
+      - name: bin/kunskap help advertises P6 recall surface
+        run: |
+          ./bin/kunskap help | grep -q 'recall <query>'
+          ./bin/kunskap help | grep -q 'Stage 1 is `rg --type md` (load-bearing)'
+          ./bin/kunskap help | grep -q 'Stage 2 is the Obsidian'
+          ./bin/kunskap help | grep -q 'Identity-independent'
+
+      # ---------- agent + command frontmatter contracts ----------
+
+      - name: agents/curator.md frontmatter parses (P1)
+        run: |
+          awk 'NR==1 && $0=="---"{f=1; next} f && $0=="---"{exit} f' agents/curator.md \
+            | grep -qE '^name: curator'
+          awk 'NR==1 && $0=="---"{f=1; next} f && $0=="---"{exit} f' agents/curator.md \
+            | grep -qE '^model: opus'
+
+      - name: agents/curator.md encodes the run-record final step (P5)
+        run: |
+          grep -q 'kunskap: curator run record' agents/curator.md
+          grep -q '_meta/last-run/curator.json' agents/curator.md
+          grep -q 'sharded per-role' agents/curator.md
+
+      - name: agents/linter.md exists with read-only frontmatter contract (P4)
+        run: |
+          [[ -f agents/linter.md ]] || { echo "agents/linter.md missing"; exit 1; }
+          grep -E '^name: linter$'           agents/linter.md
+          grep -E '^model: opus$'            agents/linter.md
+          grep -E '^tools: '                 agents/linter.md
+          grep -E '^disallowedTools:.*Write' agents/linter.md
+          grep -E '^disallowedTools:.*Edit'  agents/linter.md
+          # Plugin agents do not support these — refuse to ship if they sneak in.
+          ! grep -E '^permissionMode:' agents/linter.md
+          ! grep -E '^hooks:'          agents/linter.md
+          ! grep -E '^mcpServers:'     agents/linter.md
+
+      - name: agents/linter.md encodes MUST 9 + sharded last-run whitelist (P5)
+        run: |
+          grep -q 'MUST 9 — record the run' agents/linter.md
+          grep -q 'SOLE permitted write' agents/linter.md
+          grep -q 'kunskap: linter run record' agents/linter.md
+          grep -q '_meta/last-run/linter.json' agents/linter.md
+          grep -q '_meta/last-run/curator.json' agents/linter.md
+          # Defense in depth: linter prompt explicitly tells the agent NOT
+          # to touch the curator's shard (Pass-2 sharding lesson).
+          grep -q 'curator-owned' agents/linter.md
+
+      - name: commands/curate.md frontmatter parses (P1)
+        run: |
+          awk 'NR==1 && $0=="---"{f=1; next} f && $0=="---"{exit} f' commands/curate.md \
+            | grep -qE '^description:'
+
+      - name: commands/drafts.md exists and declares argument-hint (P3)
+        run: |
+          [[ -f commands/drafts.md ]]
+          grep -q '^argument-hint:' commands/drafts.md
+          grep -q '^description:'   commands/drafts.md
+
+      - name: commands/lint.md exists and declares argument-hint (P4)
+        run: |
+          [[ -f commands/lint.md ]]
+          grep -q '^argument-hint:' commands/lint.md
+          grep -q '^description:'   commands/lint.md
+
+      - name: commands/recall.md has expected frontmatter + delegation (P6)
+        run: |
+          [[ -f commands/recall.md ]] || { echo "missing commands/recall.md"; exit 1; }
+          head -1 commands/recall.md | grep -q '^---$'
+          grep -q 'argument-hint:' commands/recall.md
+          grep -q 'allowed-tools:' commands/recall.md
+          grep -q 'kunskap recall \$ARGUMENTS' commands/recall.md
+
+      # ---------- hooks.json shape (no public JSON-schema; jq+structural) ----------
+
+      - name: hooks scripts are executable
+        run: |
+          test -x hooks/session-start.sh
+          test -x hooks/post-write-sync.sh
+
+      - name: hooks/hooks.json parses
+        run: jq empty hooks/hooks.json
+
+      - name: hooks.json declares SessionStart and PostToolUse entries (v1.1)
+        run: |
+          jq -e '.hooks.SessionStart and .hooks.PostToolUse' hooks/hooks.json
+          jq -e '.hooks.SessionStart | type == "array" and length >= 1' hooks/hooks.json
+          jq -e '.hooks.PostToolUse  | type == "array" and length >= 1' hooks/hooks.json
+          # SessionEnd was removed at v1.1 (replaced by per-write PostToolUse).
+          jq -e '.hooks.SessionEnd | not' hooks/hooks.json
+
+      - name: hooks.json entries point at command-type hooks under \${CLAUDE_PLUGIN_ROOT}
+        run: |
+          for ev in SessionStart PostToolUse; do
+            jq -e ".hooks.${ev}[0].matcher | type == \"string\""        hooks/hooks.json
+            jq -e ".hooks.${ev}[0].hooks   | length >= 1"               hooks/hooks.json
+            jq -e ".hooks.${ev}[0].hooks[0].type == \"command\""        hooks/hooks.json
+            cmd=$(jq -r ".hooks.${ev}[0].hooks[0].command"              hooks/hooks.json)
+            [[ "$cmd" == *'${CLAUDE_PLUGIN_ROOT}'* ]] \
+              || { echo "${ev} command does not reference \${CLAUDE_PLUGIN_ROOT}: $cmd"; exit 1; }
+          done
+
+      # v1.1 capture-recall vault learning §8: step names with a literal
+      # colon must be quoted, otherwise YAML parses them as a mapping
+      # and the entire workflow vanishes from gh pr checks. Keep quoted.
+      - name: "PostToolUse hook is configured async (v1.1 — never block the agentic loop)"
+        run: jq -e '.hooks.PostToolUse[0].hooks[0].async == true' hooks/hooks.json
+
+      - name: PostToolUse matcher is Write|Edit (only file-write tools)
+        run: |
+          matcher=$(jq -r '.hooks.PostToolUse[0].matcher' hooks/hooks.json)
+          [[ "$matcher" == "Write|Edit" ]] \
+            || { echo "PostToolUse matcher drifted: $matcher (expected Write|Edit)"; exit 1; }
+
+      - name: hook scripts referenced in hooks.json exist on disk
+        run: |
+          for ev in SessionStart PostToolUse; do
+            cmd=$(jq -r ".hooks.${ev}[0].hooks[0].command" hooks/hooks.json)
+            rel="${cmd//\$\{CLAUDE_PLUGIN_ROOT\}\//}"
+            [[ -f "$rel" ]] || { echo "missing referenced script: $rel"; exit 1; }
+          done
+
+      # ---------- plugin.json: P0-deferred fuller validation ----------
+      # Anthropic doesn't publish a JSON-schema yet. We assert the documented
+      # field shapes and types from /en/plugins-reference#plugin-manifest-schema.
+
+      - name: plugin.json — required + typed manifest fields
+        run: |
+          jq -e '.name | type == "string"'                                  .claude-plugin/plugin.json
+          jq -e '.name | test("^[a-z][a-z0-9-]*$")'                          .claude-plugin/plugin.json
+          for f in version description license; do
+            jq -e ".${f} | type == \"string\""                              .claude-plugin/plugin.json
+          done
+          jq -e '.author | type == "object"'                                 .claude-plugin/plugin.json
+          jq -e '.author.name | type == "string"'                            .claude-plugin/plugin.json
+          jq -e '.repository | type == "string"'                             .claude-plugin/plugin.json
+          jq -e '.keywords | type == "array" and all(type == "string")'      .claude-plugin/plugin.json
+          jq -e '
+            [keys[]] - ["$schema","name","version","description","author","repository","license","homepage","keywords"]
+            | length == 0
+          ' .claude-plugin/plugin.json
+
+      # ---------- templates/ shape (P3 + P6 deliverables) ----------
+
+      - name: templates/vault-init/ has required tree (P3)
+        run: |
+          for f in \
+            templates/vault-init/_meta/kunskap.toml \
+            templates/vault-init/_meta/roles.toml \
+            templates/vault-init/wiki/_index.md \
+            templates/vault-init/README.md \
+            templates/vault-init/.gitignore \
+            templates/article.md \
+            templates/inbox-note.md; do
+            [[ -f "$f" ]] || { echo "missing template file: $f"; exit 1; }
+          done
+          for d in \
+            templates/vault-init/raw/inbox \
+            templates/vault-init/wiki/_drafts \
+            templates/vault-init/wiki/learnings \
+            templates/vault-init/wiki/ideas \
+            templates/vault-init/wiki/concepts \
+            templates/vault-init/wiki/patterns \
+            templates/vault-init/wiki/bases \
+            templates/vault-init/Archives/processed-inbox \
+            templates/vault-init/Archives/processed-drafts/approved \
+            templates/vault-init/Archives/processed-drafts/rejected; do
+            [[ -d "$d" ]] || { echo "missing template dir: $d"; exit 1; }
+            tracked_count=$(find "$d" -type f -not -name '.gitkeep' | wc -l)
+            if [[ "$tracked_count" -eq 0 && ! -f "$d/.gitkeep" ]]; then
+              echo "missing $d/.gitkeep (empty dir wouldn't survive git)"
+              exit 1
+            fi
+          done
+
+      - name: templates carry the substitution placeholders init expects (P3)
+        run: |
+          grep -q '{{name}}'    templates/vault-init/_meta/kunskap.toml
+          grep -q '{{created}}' templates/vault-init/_meta/kunskap.toml
+          grep -q '{{shared}}'  templates/vault-init/_meta/kunskap.toml
+          grep -q '{{name}}'    templates/vault-init/wiki/_index.md
+          grep -q '{{created}}' templates/vault-init/wiki/_index.md
+          grep -q '{{name}}'    templates/vault-init/README.md
+
+      - name: templates ship 3 starter Obsidian Bases (P6)
+        run: |
+          for b in by-author recent draft-staleness; do
+            f="templates/vault-init/wiki/bases/$b.base"
+            [[ -f "$f" ]] || { echo "missing canonical base: $f"; exit 1; }
+            grep -q '^filters:' "$f"
+            grep -q '^views:' "$f"
+          done
+
+      # ---------- bats suites (counts derived dynamically — no drifty strings) ----------
+      # P1 §7: dynamic counts; never encoded in step names.
+
+      - name: list test counts
+        run: |
+          for f in tests/contract/*.bats; do
+            n=$(grep -c '^@test ' "$f")
+            printf '  %-35s %d cases\n' "$(basename "$f")" "$n"
+          done
+
+      - name: bats — static prompt-contract (P1)
+        run: bats tests/contract/static-prompt.bats
+
+      - name: bats — CLI surface (P1)
+        run: bats tests/contract/cli-surface.bats
+
+      - name: bats — behavioral suite (skipped without KUNSKAP_LIVE_TESTS=1)
+        run: bats tests/contract/behavioral.bats
+
+      - name: bats — learn CLI surface (P2)
+        run: bats tests/contract/learn-cli.bats
+
+      - name: bats — config get + global --vault (P2)
+        run: bats tests/contract/config-cli.bats
+
+      - name: bats — hooks fail-soft smoke (P2)
+        run: bats tests/contract/hooks-smoke.bats
+
+      - name: bats — init CLI surface (P3)
+        run: bats tests/contract/init-cli.bats
+
+      - name: bats — drafts CLI surface (P3)
+        run: bats tests/contract/drafts-cli.bats
+
+      - name: bats — linter static prompt-contract (P4)
+        run: bats tests/contract/linter-static-prompt.bats
+
+      - name: bats — lint CLI surface (P4)
+        run: bats tests/contract/lint-cli.bats
+
+      - name: bats — linter behavioral (skipped without KUNSKAP_LIVE_TESTS=1)
+        run: bats tests/contract/linter-behavioral.bats
+
+      - name: bats — role check CLI (P5)
+        run: bats tests/contract/role-cli.bats
+
+      - name: bats — two-machine identity simulation (P5)
+        run: bats tests/contract/two-machine.bats
+
+      - name: bats — last-run/<role>.json whitelist source surface (P5)
+        run: bats tests/contract/last-run-cli.bats
+
+      - name: bats — TOML constrained-subset fuzz (P5)
+        run: bats tests/contract/toml-fuzz.bats
+
+      - name: bats — recall CLI (P6)
+        run: bats tests/contract/recall-cli.bats
+
+      # ---------- end-to-end flows ----------
+
+      - name: e2e — init produces a curator-runnable, drafts-queryable vault (P3)
+        run: |
+          # Hard contract for P3: the vault `kunskap init` produces must be
+          # immediately runnable by the curator (curate --check) and the
+          # drafts CLI (list against the empty _drafts/ returns cleanly).
+          tmp="$(mktemp -d)/vault"
+          KUNSKAP_AUTO_CONFIRM=1 ./bin/kunskap init "$tmp" --name "CI Smoke"
+          ./bin/kunskap curate --vault "$tmp" --check
+          ./bin/kunskap drafts list --vault "$tmp" | grep -q 'no drafts'
+          ./bin/kunskap --vault "$tmp" config get shared | grep -qx 'false'
+
+      - name: e2e — init produces a lint-runnable vault (P4)
+        run: |
+          # Hard contract for P4: a freshly-init'd vault must satisfy the
+          # lint preflight (vault validation passes; only claude-on-PATH
+          # would gate the actual agent run). P5 added an identity check
+          # before claude-PATH; set identity here so the preflight can reach
+          # the external check.
+          tmp="$(mktemp -d)/vault"
+          xdg="$(mktemp -d)"
+          mkdir -p "$xdg/kunskap"
+          printf '[user]\nname  = "ci"\nhost  = "runner"\n' > "$xdg/kunskap/identity.toml"
+          KUNSKAP_AUTO_CONFIRM=1 ./bin/kunskap init "$tmp" --name "CI Smoke"
+          if XDG_CONFIG_HOME="$xdg" PATH="/usr/bin:/bin" ./bin/kunskap lint --vault "$tmp" 2>&1 | tee /tmp/lint.out; then
+            echo "expected non-zero exit when claude is not on PATH"; exit 1
+          fi
+          grep -q 'claude' /tmp/lint.out
+          ( cd "$tmp" && git add . && git -c user.email=ci@k -c user.name=ci commit -q -m seed )
+          before="$(git -C "$tmp" status --porcelain)"
+          XDG_CONFIG_HOME="$xdg" PATH="/usr/bin:/bin" ./bin/kunskap lint --vault "$tmp" 2>/dev/null || true
+          after="$(git -C "$tmp" status --porcelain)"
+          [[ "$before" == "$after" ]] || { echo "lint mutated vault on failed preflight"; exit 1; }
+
+      - name: e2e — init → curate-check → lint preflight (P5)
+        run: |
+          tmp="$(mktemp -d)/vault"
+          KUNSKAP_AUTO_CONFIRM=1 ./bin/kunskap init "$tmp" --name "CI Smoke"
+          ./bin/kunskap curate --vault "$tmp" --check
+          # Lint preflight without identity → identity-not-set refusal.
+          if PATH="/usr/bin:/bin" ./bin/kunskap lint --vault "$tmp" 2>&1 | tee /tmp/lint-noid.out; then
+            echo "expected non-zero exit when identity is not set"; exit 1
+          fi
+          grep -q 'identity not set' /tmp/lint-noid.out
+          # Set identity, retry — should reach the TBD-primary warning then
+          # the claude-PATH check (which fails on CI).
+          xdg="$(mktemp -d)"
+          mkdir -p "$xdg/kunskap"
+          printf '[user]\nname  = "ci"\nhost  = "runner"\n' > "$xdg/kunskap/identity.toml"
+          if XDG_CONFIG_HOME="$xdg" PATH="/usr/bin:/bin" ./bin/kunskap lint --vault "$tmp" 2>&1 | tee /tmp/lint-id.out; then
+            echo "expected non-zero exit when claude is not on PATH"; exit 1
+          fi
+          grep -q 'no roles.linter.primary configured' /tmp/lint-id.out
+          grep -q 'claude' /tmp/lint-id.out
+          ( cd "$tmp" && git add . && git -c user.email=ci@k -c user.name=ci commit -q -m seed )
+          before="$(git -C "$tmp" status --porcelain)"
+          XDG_CONFIG_HOME="$xdg" PATH="/usr/bin:/bin" ./bin/kunskap lint --vault "$tmp" 2>/dev/null || true
+          after="$(git -C "$tmp" status --porcelain)"
+          [[ "$before" == "$after" ]] || { echo "lint mutated vault on failed preflight"; exit 1; }
+
+      - name: e2e — init produces a recall-runnable vault (P6)
+        run: |
+          tmp="$(mktemp -d)/vault"
+          KUNSKAP_AUTO_CONFIRM=1 ./bin/kunskap init "$tmp" --name "CI Smoke"
+          # Sample seeded notes from `kunskap init` are content-bearing — recall
+          # for "kunskap" must hit at least one of them. Exit code: 0 = hit, 1 = no hits.
+          ./bin/kunskap recall "kunskap" --vault "$tmp" --format json | jq -e '.hits | length > 0'
+          # Recall is read-only — vault state must be unchanged after.
+          ( cd "$tmp" && git add . && git -c user.email=ci@k -c user.name=ci commit -q -m seed )
+          before_status="$(git -C "$tmp" status --porcelain --untracked-files=all)"
+          before_head="$(git -C "$tmp" rev-parse HEAD)"
+          ./bin/kunskap recall "kunskap" --vault "$tmp" --format json >/dev/null
+          after_status="$(git -C "$tmp" status --porcelain --untracked-files=all)"
+          after_head="$(git -C "$tmp" rev-parse HEAD)"
+          [[ "$before_status" == "$after_status" ]] || { echo "recall mutated working tree"; exit 1; }
+          [[ "$before_head" == "$after_head" ]] || { echo "recall created a commit"; exit 1; }
+          if ./bin/kunskap recall "absolutely-nonexistent-zzzz" --vault "$tmp" >/dev/null 2>&1; then
+            echo "expected exit 1 on no-hit query"; exit 1
+          fi
+
+      # ---------- drift lints (P1 §7, P2 §8, P3 §8, P4 §9) ----------
+
+      - name: CHANGELOG/README contain no hardcoded test counts
+        run: |
+          # P1 lesson: any "(N tests)" string in CHANGELOG/README will drift the
+          # next time the suite grows. CI must reject the drift-prone shape.
+          if grep -nE '\([0-9]+ tests?\)' CHANGELOG.md README.md 2>/dev/null; then
+            echo "drift: hardcoded test count in CHANGELOG/README — remove or compute it dynamically"
+            exit 1
+          fi
+
+      - name: CHANGELOG/README do not name retired CI workflow files
+        run: |
+          # validate.yml was renamed to p0.yml in P0; a stray reference there
+          # would drift. The historical CHANGELOG entries that name pN.yml are
+          # accurate first-shipped references, not drift — don't lint them.
+          if grep -nE 'validate\.yml' CHANGELOG.md README.md 2>/dev/null; then
+            echo "drift: CHANGELOG/README references retired validate.yml"
+            exit 1
+          fi
+          # Live README references (e.g. badge URL) must point at the
+          # consolidated workflow, not a retired phase workflow.
+          if grep -nE 'workflows/p[0-6]\.yml' README.md 2>/dev/null; then
+            echo "drift: README references retired phase workflow (p0..p6.yml → ci.yml in v1.1.1)"
+            exit 1
+          fi
+
+      - name: CHANGELOG/README do not embed numeric facts that drift (P4 §9)
+        run: |
+          # Single source of truth = the test files themselves.
+          if grep -nE '\b[0-9]+[[:space:]]+(MUST|tests?|cases|bats)\b' CHANGELOG.md README.md 2>/dev/null; then
+            echo "drift: CHANGELOG/README embeds a numeric fact (\`<N> MUST/tests/cases/bats\`)"
+            echo "       — remove the count or compute it dynamically (single source of truth)"
+            exit 1
+          fi
+
+      # ---------- static-prompt fingerprint substring-collision detector (P4 §7) ----------
+
+      - name: static-prompt fingerprint substring-collision detector
+        run: |
+          extract_one() {
+            local helper="$1" file="$2"
+            grep -hE "${helper}[[:space:]]+\"" "$file" \
+              | sed -E "s/.*${helper}[[:space:]]+\"//" \
+              | sed -E 's/"[[:space:]]*$//' \
+              | sort -u
+          }
+          curator_fp=()
+          while IFS= read -r line; do curator_fp+=("$line"); done \
+            < <(extract_one prompt_contains tests/contract/static-prompt.bats)
+          linter_fp=()
+          while IFS= read -r line; do linter_fp+=("$line"); done \
+            < <(extract_one linter_prompt_contains tests/contract/linter-static-prompt.bats)
+          collisions=0
+          check() {
+            local label="$1"; shift
+            local arr=("$@")
+            local i j a b
+            for ((i = 0; i < ${#arr[@]}; i++)); do
+              for ((j = i + 1; j < ${#arr[@]}; j++)); do
+                a="${arr[$i]}"; b="${arr[$j]}"
+                [[ -z "$a" || -z "$b" || "$a" == "$b" ]] && continue
+                if [[ "$a" == *"$b"* ]]; then
+                  echo "[$label] collision: \"$b\" is a substring of \"$a\""
+                  collisions=$((collisions + 1))
+                fi
+                if [[ "$b" == *"$a"* ]]; then
+                  echo "[$label] collision: \"$a\" is a substring of \"$b\""
+                  collisions=$((collisions + 1))
+                fi
+              done
+            done
+          }
+          check curator "${curator_fp[@]}"
+          check linter  "${linter_fp[@]}"
+          if [[ $collisions -gt 0 ]]; then
+            echo "found $collisions fingerprint substring collisions — clauses on the SHORTER side can drift undetected (P4 §7)"
+            exit 1
+          fi
+          echo "fingerprint-uniqueness OK (${#curator_fp[@]} curator + ${#linter_fp[@]} linter fingerprints)"
