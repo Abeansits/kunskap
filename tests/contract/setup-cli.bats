@@ -300,4 +300,75 @@ EOF
   # CLAUDE.md inject (those live behind cmd_learn_enable).
   [[ "$body" != *"inject_claudemd"* ]]
   [[ "$body" != *"marker_path"*     ]]
+  # Pass-1 (Codex) added the mid-rebase guard — lock it so a future edit
+  # can't drop it silently.
+  [[ "$body" == *"mid_rebase_guard"* ]]
+}
+
+# ---------- mid-rebase guard (Codex Pass 1 finding) ----------
+
+@test "setup refuses to mutate a vault that's mid-rebase" {
+  cd "$TMPPROJ"
+  write_identity_toml "$TMPXDG" "vigil" "laptop"
+  TMPVAULT="$(make_empty_init_vault)"
+  # Simulate mid-rebase by creating .git/rebase-merge (matches mid_rebase_guard's check).
+  mkdir -p "$TMPVAULT/.git/rebase-merge"
+  run "$KUNSKAP_BIN" setup --vault "$TMPVAULT" --multiplayer --yes
+  [[ "$status" -ne 0 ]]
+  [[ "$output" == *"rebase"* ]]
+  # Setup must not have written a marker — guard fires before any mutation.
+  [[ ! -f "$TMPPROJ/.claude/kunskap.json" ]]
+  # roles.toml unchanged (still TBD primaries).
+  grep -Fxq 'primary = "TBD"' "$TMPVAULT/_meta/roles.toml"
+}
+
+# ---------- set_role_primaries: named exit codes actually fire (Pass-1 bug fix) ----------
+
+@test "set_role_primaries reports a clear error when [roles.curator] section is missing" {
+  cd "$TMPPROJ"
+  write_identity_toml "$TMPXDG" "vigil" "laptop"
+  TMPVAULT="$(make_empty_init_vault)"
+  # Hand-break roles.toml: drop the [roles.curator] section header.
+  printf '[roles.linter]\nprimary = "TBD"\n' > "$TMPVAULT/_meta/roles.toml"
+  run "$KUNSKAP_BIN" setup --vault "$TMPVAULT" --multiplayer --yes
+  [[ "$status" -ne 0 ]]
+  # Must surface the section-missing error, NOT a generic "awk rc=0".
+  [[ "$output" == *"missing"* ]]
+  [[ "$output" == *"[roles.curator]"* || "$output" == *"[roles.linter]"* ]]
+  [[ "$output" != *"awk rc=0"* ]]
+}
+
+@test "set_role_primaries reports a clear error when a [roles.X] section is missing its primary line" {
+  cd "$TMPPROJ"
+  write_identity_toml "$TMPXDG" "vigil" "laptop"
+  TMPVAULT="$(make_empty_init_vault)"
+  # Hand-break roles.toml: drop the primary line under [roles.curator].
+  cat > "$TMPVAULT/_meta/roles.toml" <<'EOF'
+[roles.curator]
+
+[roles.linter]
+primary = "TBD"
+EOF
+  run "$KUNSKAP_BIN" setup --vault "$TMPVAULT" --multiplayer --yes
+  [[ "$status" -ne 0 ]]
+  [[ "$output" == *"primary"* ]]
+  [[ "$output" != *"awk rc=0"* ]]
+}
+
+@test "set_role_primaries is atomic — partial failure leaves roles.toml unchanged" {
+  cd "$TMPPROJ"
+  write_identity_toml "$TMPXDG" "vigil" "laptop"
+  TMPVAULT="$(make_empty_init_vault)"
+  # Hand-break: linter section is missing, curator is canonical. Old
+  # two-pass code would have written curator=vigil@laptop before erroring
+  # on linter; the one-pass refactor must leave both untouched.
+  cat > "$TMPVAULT/_meta/roles.toml" <<'EOF'
+[roles.curator]
+primary = "TBD"
+EOF
+  before_sha="$(shasum "$TMPVAULT/_meta/roles.toml" | cut -d' ' -f1)"
+  run "$KUNSKAP_BIN" setup --vault "$TMPVAULT" --multiplayer --yes
+  [[ "$status" -ne 0 ]]
+  after_sha="$(shasum "$TMPVAULT/_meta/roles.toml" | cut -d' ' -f1)"
+  [[ "$before_sha" == "$after_sha" ]]
 }

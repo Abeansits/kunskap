@@ -2220,44 +2220,47 @@ cmd_recall() {
   return 0
 }
 
-# Set roles.<role>.primary in <vault>/_meta/roles.toml. Idempotent:
-# overwrites any existing primary line within the [roles.<role>] section.
-# Errors if the section header isn't present (vault wasn't `kunskap init`'d
-# or roles.toml was hand-broken). Used by cmd_setup --multiplayer; kept
-# tightly scoped — full TOML mutation is out of v1.2's scope.
-set_role_primary() {
-  local vault="$1" role="$2" identity="$3"
+# Set roles.curator.primary AND roles.linter.primary to <identity> in one
+# atomic pass over <vault>/_meta/roles.toml. Single awk + single mv: avoids
+# the half-updated-vault state if one role sees an error and the other
+# doesn't. Idempotent — overwrites whatever value is there (TBD or
+# already-set). Section + field matching mirror `read_toml_field`'s exact-
+# match style, so reader and writer accept the same canonical form (the
+# template's). Used by cmd_setup --multiplayer; full TOML mutation is out
+# of v1.2's scope.
+#
+# Named exit codes (captured via `awk ... || rc=$?`, not `if ! awk`, since
+# the latter loses the underlying status to the bang's inversion):
+#   2 = at least one of [roles.curator] / [roles.linter] section header missing
+#   3 = at least one section is missing its `primary =` line
+set_role_primaries() {
+  local vault="$1" identity="$2"
   local file="$vault/_meta/roles.toml"
   [[ -f "$file" ]] || die "setup: roles.toml missing at $file (vault not kunskap-init'd?)"
 
-  local out
+  local out rc=0
   out="$(mktemp -t kunskap-roles.XXXXXX)"
-  if ! awk -v sec="[roles.$role]" -v ident="$identity" '
-    BEGIN { in_sec = 0; replaced = 0; saw_section = 0 }
-    $0 == sec { in_sec = 1; saw_section = 1; print; next }
-    /^\[/    { in_sec = 0; print; next }
-    in_sec && $1 == "primary" {
-      print "primary = \"" ident "\""
-      replaced = 1
-      next
-    }
+  awk -v ident="$identity" '
+    BEGIN { in_curator = 0; in_linter = 0
+            saw_curator = 0; saw_linter = 0
+            r_curator = 0; r_linter = 0 }
+    $0 == "[roles.curator]" { in_curator = 1; in_linter = 0; saw_curator = 1; print; next }
+    $0 == "[roles.linter]"  { in_linter = 1; in_curator = 0; saw_linter = 1; print; next }
+    /^\[/                   { in_curator = 0; in_linter = 0; print; next }
+    in_curator && $1 == "primary" { print "primary = \"" ident "\""; r_curator = 1; next }
+    in_linter  && $1 == "primary" { print "primary = \"" ident "\""; r_linter  = 1; next }
     { print }
     END {
-      if (!saw_section) exit 2
-      if (!replaced)    exit 3
-      exit 0
+      if (!saw_curator || !saw_linter) exit 2
+      if (!r_curator   || !r_linter)   exit 3
     }
-  ' "$file" > "$out"; then
-    local rc=$?
-    rm -f "$out"
-    if [[ $rc -eq 2 ]]; then
-      die "setup: [roles.$role] section missing in $file"
-    elif [[ $rc -eq 3 ]]; then
-      die "setup: no \`primary =\` line in [roles.$role] section of $file"
-    else
-      die "setup: failed to rewrite $file (awk rc=$rc)"
-    fi
-  fi
+  ' "$file" > "$out" || rc=$?
+  case "$rc" in
+    0) ;;
+    2) rm -f "$out"; die "setup: roles.toml at $file is missing [roles.curator] and/or [roles.linter] section" ;;
+    3) rm -f "$out"; die "setup: roles.toml at $file is missing a \`primary =\` line in [roles.curator] and/or [roles.linter]" ;;
+    *) rm -f "$out"; die "setup: failed to rewrite $file (awk rc=$rc)" ;;
+  esac
   mv "$out" "$file"
 }
 
@@ -2295,6 +2298,10 @@ cmd_setup() {
     [[ -e "$vault" ]]                    || die "setup: vault not found: $vault (pass --init to bootstrap)"
     [[ -d "$vault" ]]                    || die "setup: vault path is not a directory: $vault"
     [[ -f "$vault/_meta/kunskap.toml" ]] || die "setup: not a kunskap vault (missing _meta/kunskap.toml): $vault (pass --init to bootstrap)"
+    # Refuse mid-rebase / merge / cherry-pick before any mutation — the
+    # multiplayer commit + push step would otherwise fail late, leaving
+    # roles.toml staged but un-committed in a wedged repo.
+    [[ -d "$vault/.git" ]] && mid_rebase_guard "$vault" "setup"
   fi
 
   local existing_identity=""
@@ -2328,8 +2335,10 @@ cmd_setup() {
 
   if $multiplayer; then
     echo "kunskap: setup [3/4] setting curator + linter primaries to $identity"
-    set_role_primary "$vault" curator "$identity"
-    set_role_primary "$vault" linter  "$identity"
+    set_role_primaries "$vault" "$identity"
+    # Multiplayer on a non-git vault: the mutation succeeded but no commit
+    # will fire below. Warn so the user knows to commit + push themselves.
+    [[ -d "$vault/.git" ]] || echo "kunskap: setup: $vault is not a git repo; roles.toml was rewritten but not committed" >&2
   else
     echo "kunskap: setup [3/4] skipping multiplayer (roles stay TBD; solo-mode default)"
   fi
