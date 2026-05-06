@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="1.1.0"
+VERSION="1.1.1"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/kunskap"
 IDENTITY_FILE="$CONFIG_DIR/identity.toml"
 
@@ -686,6 +686,9 @@ cmd_learn_status() {
 
   # Risk #5 (identity fragility) cross-check: if identity-string appears as a
   # role primary in any roles.toml section, status confirms; mismatch warns.
+  # "TBD" (the default in the v1.0+ roles.toml template) and empty are both
+  # treated as "primary not declared" — surface that as a separate semantic
+  # state so users don't think their identity failed a check that never ran.
   local roles_file="$vault/_meta/roles.toml"
   if [[ -n "$identity" && -f "$roles_file" ]]; then
     local cur lin matched=""
@@ -693,8 +696,21 @@ cmd_learn_status() {
     lin="$(read_toml_field "$roles_file" roles.linter  primary 2>/dev/null || true)"
     [[ "$cur" == "$identity" ]] && matched="$matched curator"
     [[ "$lin" == "$identity" ]] && matched="$matched linter"
-    if [[ -n "$matched" ]]; then
+    local cur_tbd="" lin_tbd=""
+    [[ -z "$cur" || "$cur" == "TBD" ]] && cur_tbd=1
+    [[ -z "$lin" || "$lin" == "TBD" ]] && lin_tbd=1
+    if [[ -n "$cur_tbd" && -n "$lin_tbd" ]]; then
+      echo "ROLE-CHECK: no primary configured (curator and linter primaries are TBD; edit _meta/roles.toml to declare)"
+    elif [[ -n "$matched" && -n "$cur_tbd" ]]; then
+      echo "ROLE-CHECK: primary for$matched (curator primary is TBD; edit _meta/roles.toml to declare)"
+    elif [[ -n "$matched" && -n "$lin_tbd" ]]; then
+      echo "ROLE-CHECK: primary for$matched (linter primary is TBD; edit _meta/roles.toml to declare)"
+    elif [[ -n "$matched" ]]; then
       echo "ROLE-CHECK: primary for$matched"
+    elif [[ -n "$cur_tbd" ]]; then
+      echo "ROLE-CHECK: not primary (curator primary is TBD; linter primary: ${lin})"
+    elif [[ -n "$lin_tbd" ]]; then
+      echo "ROLE-CHECK: not primary (curator primary: ${cur}; linter primary is TBD)"
     else
       echo "ROLE-CHECK: not primary (curator: ${cur:-<unset>}; linter: ${lin:-<unset>})"
     fi
@@ -1357,6 +1373,14 @@ Enable in a project:
 Roles (P5 will enforce):
   Edit "$abs/_meta/roles.toml" to declare curator + linter primaries
   using your \`kunskap whoami\` identity-string.
+
+  WHY: the single-primary contract prevents write conflicts on shared
+  vaults (one machine curates, one lints; everyone reads). Solo /
+  single-machine users? Skip — defaults are fine.
+  HOW: \`kunskap whoami\` prints your slug; set roles.curator.primary
+  and roles.linter.primary in _meta/roles.toml, then
+  \`git add _meta/roles.toml && git commit -m "roles: assign primaries" && git push\`
+  so teammates pick it up.
 EOF
   if [[ -n "$shared_remote" ]]; then
     printf '\nShared remote configured: %s\n' "$shared_remote"

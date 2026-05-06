@@ -275,6 +275,93 @@ EOF
   rm -rf "$vault"
 }
 
+@test "learn status reports no-primary-configured when both primaries are TBD (v1.1.1)" {
+  cd "$TMPPROJ"
+  "$KUNSKAP_BIN" config user --name ci --host runner >/dev/null 2>&1
+  vault="$(mktemp -d)"
+  mkdir -p "$vault/_meta"
+  cat > "$vault/_meta/kunskap.toml" <<EOF
+[vault]
+shared = false
+EOF
+  cat > "$vault/_meta/roles.toml" <<EOF
+[roles.curator]
+primary = "TBD"
+
+[roles.linter]
+primary = "TBD"
+EOF
+  KUNSKAP_AUTO_CONFIRM=1 "$KUNSKAP_BIN" learn enable --vault "$vault"
+  run "$KUNSKAP_BIN" learn status
+  [[ "$status" -eq 0 ]] || { echo "$output"; rm -rf "$vault"; return 1; }
+  [[ "$output" == *"ROLE-CHECK: no primary configured"* ]] \
+    || { echo "$output"; rm -rf "$vault"; return 1; }
+  [[ "$output" == *"curator and linter primaries are TBD"* ]] \
+    || { echo "$output"; rm -rf "$vault"; return 1; }
+  [[ "$output" == *"_meta/roles.toml"* ]] \
+    || { echo "$output"; rm -rf "$vault"; return 1; }
+  # Anti-regression: must NOT use the misleading pre-v1.1.1 wording where
+  # an all-TBD vault was reported as if the user had failed an identity
+  # check against a configured primary.
+  [[ "$output" != *"not primary (curator: TBD"* ]] \
+    || { echo "$output"; rm -rf "$vault"; return 1; }
+  rm -rf "$vault"
+}
+
+@test "learn status names the TBD role individually when only one primary is configured (v1.1.1)" {
+  cd "$TMPPROJ"
+  "$KUNSKAP_BIN" config user --name ci --host runner >/dev/null 2>&1
+  vault="$(mktemp -d)"
+  mkdir -p "$vault/_meta"
+  cat > "$vault/_meta/kunskap.toml" <<EOF
+[vault]
+shared = false
+EOF
+  cat > "$vault/_meta/roles.toml" <<EOF
+[roles.curator]
+primary = "sebastian@laptop"
+
+[roles.linter]
+primary = "TBD"
+EOF
+  KUNSKAP_AUTO_CONFIRM=1 "$KUNSKAP_BIN" learn enable --vault "$vault"
+  run "$KUNSKAP_BIN" learn status
+  [[ "$status" -eq 0 ]] || { echo "$output"; rm -rf "$vault"; return 1; }
+  [[ "$output" == *"ROLE-CHECK: not primary"* ]] \
+    || { echo "$output"; rm -rf "$vault"; return 1; }
+  [[ "$output" == *"sebastian@laptop"* ]] \
+    || { echo "$output"; rm -rf "$vault"; return 1; }
+  [[ "$output" == *"linter primary is TBD"* ]] \
+    || { echo "$output"; rm -rf "$vault"; return 1; }
+  rm -rf "$vault"
+}
+
+@test "learn status flags TBD even when identity matches the configured role (v1.1.1)" {
+  cd "$TMPPROJ"
+  "$KUNSKAP_BIN" config user --name ci --host runner >/dev/null 2>&1
+  vault="$(mktemp -d)"
+  mkdir -p "$vault/_meta"
+  cat > "$vault/_meta/kunskap.toml" <<EOF
+[vault]
+shared = false
+EOF
+  cat > "$vault/_meta/roles.toml" <<EOF
+[roles.curator]
+primary = "ci@runner"
+
+[roles.linter]
+primary = "TBD"
+EOF
+  KUNSKAP_AUTO_CONFIRM=1 "$KUNSKAP_BIN" learn enable --vault "$vault"
+  run "$KUNSKAP_BIN" learn status
+  [[ "$status" -eq 0 ]] || { echo "$output"; rm -rf "$vault"; return 1; }
+  [[ "$output" == *"ROLE-CHECK: primary for curator"* ]] \
+    || { echo "$output"; rm -rf "$vault"; return 1; }
+  [[ "$output" == *"linter primary is TBD"* ]] \
+    || { echo "$output"; rm -rf "$vault"; return 1; }
+  rm -rf "$vault"
+}
+
 @test "learn unknown subcommand dies clearly" {
   run "$KUNSKAP_BIN" learn frobnicate
   [[ "$status" -ne 0 ]]
