@@ -19,7 +19,7 @@ Useful findings — gotchas, design decisions, "this is how X really works" — 
 
 ## Status
 
-**v1.1.0 — capture + recall, closing the value loop.** Agents auto-capture, agents auto-recall, sync is per-write asynchronous, and a single `CLAUDE.md` injection makes every session in a kunskap-enabled project know the contract. Built on v1.0's multiplayer-safe foundation. The full design lives at [`docs/kunskap-design.md`](docs/kunskap-design.md).
+**v1.2.0 — `/kunskap:setup` guided onboarding.** One slash command, one short conversation: identity + vault + project marker + (optional) multiplayer roles, all wired in ≤5 minutes. Built on v1.1's capture-and-recall foundation. The full design lives at [`docs/kunskap-design.md`](docs/kunskap-design.md).
 
 ## Install
 
@@ -28,24 +28,27 @@ Useful findings — gotchas, design decisions, "this is how X really works" — 
 /plugin install kunskap@kunskap-marketplace
 ```
 
-Then per machine, configure your identity (one-time):
+Then run guided onboarding from any project:
 
 ```
-kunskap config user --name <yourslug-lowercase> --host <stable-host-name>
+/kunskap:setup
 ```
 
-`--name` is lowercase because the role-assignment key is case-sensitive (so `Foo`/`foo` would silently miss the role check); `--host` should be set explicitly (don't rely on `hostname -s` — machine renames silently break role checks; see Risk #5).
+`/kunskap:setup` asks three questions (identity, vault path, solo vs multiplayer), shows what it'll run, and composes the four underlying primitives in one go: `kunskap config user`, `kunskap init`, the multiplayer `_meta/roles.toml` edit, and `/kunskap:learn enable`. End state: identity written, vault initialized, project marker in `.claude/kunskap.json`, capture + recall conventions injected into `CLAUDE.md`.
 
-Verify:
+For automation / CI / scripted onboarding, the underlying verb is non-interactive:
 
 ```
-kunskap whoami
-# → yourslug@stable-host-name
+kunskap setup --name <slug> --host <host> --vault <path> [--init] [--multiplayer] [--yes]
 ```
+
+If you'd rather wire things up by hand, all four primitives are still available standalone (`kunskap config user`, `kunskap init`, `/kunskap:learn enable`, plus a `_meta/roles.toml` edit for multiplayer). The setup verb is the composer; nothing it does is hidden from the standalone path.
+
+`--name` is lowercase because the role-assignment key is case-sensitive (so `Foo`/`foo` would silently miss the role check); `--host` should be set explicitly (don't rely on `hostname -s` — machine renames silently break role checks; see Risk #5). Verify with `kunskap whoami` (prints `<slug>@<host>`).
 
 ## Per-project opt-in
 
-Kunskap fires only in projects you've opted in. Running `/kunskap:learn enable --vault <path>` does two things:
+Kunskap fires only in projects you've opted in. `/kunskap:setup` handles this for you; the underlying primitive `/kunskap:learn enable --vault <path>` does two things:
 
 1. **Writes a marker** at `.claude/kunskap.json` carrying the absolute vault path, an `enabled: true` flag, and a `confirmed_at` timestamp. Without that marker, the plugin's hooks no-op silently.
 2. **Injects a managed block into `<project>/CLAUDE.md`** (creates the file if missing) bounded by `<!-- BEGIN/END kunskap (managed) -->` markers. The block carries capture + recall conventions: filename pattern, source-priority rule, entry format, and the recall instruction at task start. Idempotent — re-enabling replaces the block in place.
@@ -203,8 +206,9 @@ Full design: [`docs/kunskap-design.md`](docs/kunskap-design.md).
 - [x] **P5** — Single-primary role assignment + sharded `_meta/last-run/{curator,linter}.json` + headless-agent CWD fix.
 - [x] **P6** — Search (`kunskap recall`) + Obsidian Bases starters + marketplace listing + README polish.
 - [x] **v1.1** — Capture + recall: `CLAUDE.md` injection on `learn enable`, per-write async sync via `PostToolUse(Write|Edit)`, `/kunskap:sync` manual lever, uncommitted-inbox visibility nudges.
+- [x] **v1.2** — Guided onboarding: `/kunskap:setup` slash command + `kunskap setup` CLI compose identity + vault + marker + multiplayer roles in one short conversation.
 
-Post-v1.1 work (plan-mode hook for forced recall, cron / GitHub Actions, settings UI, search v2 with embeddings) is driven by real-usage findings, not a fixed roadmap.
+Post-v1.2 work (plan-mode hook for forced recall, `kunskap migrate` for importing existing notes, cron / GitHub Actions, settings UI, search v2 with embeddings) is driven by real-usage findings, not a fixed roadmap.
 
 ## License
 

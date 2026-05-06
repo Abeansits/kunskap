@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="1.1.1"
+VERSION="1.2.0"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/kunskap"
 IDENTITY_FILE="$CONFIG_DIR/identity.toml"
 
@@ -61,6 +61,7 @@ Usage:
   kunskap audit-coverage --vault <abs-path> [--format text|json]
   kunskap recall <query> [--vault <abs-path>] [--author <X>] [--tag <Y>] [--limit <N>] [--format text|json]
   kunskap sync   [--vault <abs-path>]
+  kunskap setup  --vault <path> [--name <slug> --host <host>] [--init] [--multiplayer] [--yes]
 
 Notes:
   --host is recommended on \`config user\`. Without it, host derives from
@@ -127,6 +128,14 @@ Notes:
   0 = at least one hit, 1 = no hits. Vault resolves from --vault, then the
   project marker (.claude/kunskap.json). Identity-independent — works on
   any machine regardless of role.
+
+  \`setup\` is the non-interactive composer for first-install onboarding —
+  it runs \`config user\` (if --name/--host given), \`init\` (if --init
+  given), sets curator + linter primaries (if --multiplayer given), and
+  \`learn enable\` against the current project, then prints \`learn status\`.
+  Driven by /kunskap:setup. Each step is composed from the existing CLI
+  verbs above; no logic is duplicated. \`--yes\` propagates to every
+  destructive step (Risk #7 — must be explicit, not default).
 EOF
 }
 
@@ -2211,6 +2220,188 @@ cmd_recall() {
   return 0
 }
 
+# Set roles.curator.primary AND roles.linter.primary to <identity> in one
+# atomic pass over <vault>/_meta/roles.toml. Single awk + single mv: avoids
+# the half-updated-vault state if one role sees an error and the other
+# doesn't. Idempotent — overwrites whatever value is there (TBD or
+# already-set). Section + field matching mirror `read_toml_field`'s exact-
+# match style, so reader and writer accept the same canonical form (the
+# template's). Used by cmd_setup --multiplayer; full TOML mutation is out
+# of v1.2's scope.
+#
+# Named exit codes (captured via `awk ... || rc=$?`, not `if ! awk`, since
+# the latter loses the underlying status to the bang's inversion):
+#   2 = at least one of [roles.curator] / [roles.linter] section header missing
+#   3 = at least one section is missing its `primary =` line
+set_role_primaries() {
+  local vault="$1" identity="$2"
+  local file="$vault/_meta/roles.toml"
+  [[ -f "$file" ]] || die "setup: roles.toml missing at $file (vault not kunskap-init'd?)"
+
+  # Place the tempfile next to the target so the mv is a same-filesystem
+  # rename(2) — actually atomic. Without this, `mktemp -t` lands in TMPDIR
+  # which on macOS is a different filesystem (`/var/folders/...`), and `mv`
+  # falls back to copy+unlink — not atomic, can fail mid-copy under disk
+  # pressure (Pass-2 review finding).
+  local out rc=0
+  out="$(mktemp "$file.XXXXXX")"
+  awk -v ident="$identity" '
+    BEGIN { in_curator = 0; in_linter = 0
+            saw_curator = 0; saw_linter = 0
+            r_curator = 0; r_linter = 0 }
+    $0 == "[roles.curator]" { in_curator = 1; in_linter = 0; saw_curator = 1; print; next }
+    $0 == "[roles.linter]"  { in_linter = 1; in_curator = 0; saw_linter = 1; print; next }
+    /^\[/                   { in_curator = 0; in_linter = 0; print; next }
+    in_curator && $1 == "primary" { print "primary = \"" ident "\""; r_curator = 1; next }
+    in_linter  && $1 == "primary" { print "primary = \"" ident "\""; r_linter  = 1; next }
+    { print }
+    END {
+      if (!saw_curator || !saw_linter) exit 2
+      if (!r_curator   || !r_linter)   exit 3
+    }
+  ' "$file" > "$out" || rc=$?
+  case "$rc" in
+    0) ;;
+    2) rm -f "$out"; die "setup: roles.toml at $file is missing [roles.curator] and/or [roles.linter] section" ;;
+    3) rm -f "$out"; die "setup: roles.toml at $file is missing a \`primary =\` line in [roles.curator] and/or [roles.linter]" ;;
+    *) rm -f "$out"; die "setup: failed to rewrite $file (awk rc=$rc)" ;;
+  esac
+  mv "$out" "$file"
+}
+
+cmd_setup() {
+  local name="" host="" vault="" do_init=false multiplayer=false yes=false
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --name)        require_value --name  "${2-__MISSING__}"; name="$2"; shift 2 ;;
+      --host)        require_value --host  "${2-__MISSING__}"; host="$2"; shift 2 ;;
+      --vault)       require_value --vault "${2-__MISSING__}"; vault="$2"; shift 2 ;;
+      --init)        do_init=true; shift ;;
+      --multiplayer) multiplayer=true; shift ;;
+      --yes|-y)      yes=true; shift ;;
+      *) die "setup: unknown extra args: $1" ;;
+    esac
+  done
+  [[ -n "$vault" ]] || die "setup: --vault <path> is required"
+
+  # Risk #5 — partial identity silently breaks role checks; refuse the half-state.
+  if [[ -n "$name" && -z "$host" ]] || [[ -z "$name" && -n "$host" ]]; then
+    die "setup: --name and --host must be set together (got name='$name' host='$host')"
+  fi
+
+  # Don't `cd` to canonicalize — --init mode means the path may not exist yet.
+  if [[ "$vault" != /* ]]; then
+    vault="$PWD/$vault"
+    echo "kunskap: setup: --vault was relative; resolved to $vault" >&2
+  fi
+
+  if $do_init; then
+    if [[ -d "$vault" && -f "$vault/_meta/kunskap.toml" ]]; then
+      die "setup: --init given but $vault is already a kunskap vault (omit --init to bind to the existing vault)"
+    fi
+  else
+    [[ -e "$vault" ]]                    || die "setup: vault not found: $vault (pass --init to bootstrap)"
+    [[ -d "$vault" ]]                    || die "setup: vault path is not a directory: $vault"
+    [[ -f "$vault/_meta/kunskap.toml" ]] || die "setup: not a kunskap vault (missing _meta/kunskap.toml): $vault (pass --init to bootstrap)"
+    # Refuse mid-rebase / merge / cherry-pick before any mutation — the
+    # multiplayer commit + push step would otherwise fail late, leaving
+    # roles.toml staged but un-committed in a wedged repo. Worktree-aware
+    # via `rev-parse --is-inside-work-tree` (matches cmd_lint:917) — naive
+    # `[[ -d .git ]]` skips git worktrees where .git is a file pointing at
+    # the worktree's gitdir (Pass-2 review).
+    if git -C "$vault" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+      mid_rebase_guard "$vault" "setup"
+    fi
+  fi
+
+  local existing_identity=""
+  existing_identity="$(compute_identity_string 2>/dev/null || true)"
+  local identity=""
+
+  if [[ -n "$name" ]]; then
+    identity="$name@$host"
+    if [[ -n "$existing_identity" && "$existing_identity" != "$identity" ]]; then
+      if ! $yes && [[ "${KUNSKAP_AUTO_CONFIRM:-}" != "1" ]]; then
+        die "setup: identity already set to $existing_identity; --name/--host would overwrite to $identity (pass --yes to confirm, or omit --name/--host to keep existing)"
+      fi
+      echo "kunskap: setup: overwriting identity $existing_identity → $identity" >&2
+    fi
+    echo "kunskap: setup [1/4] writing identity $identity"
+    cmd_config_user --name "$name" --host "$host"
+  else
+    [[ -n "$existing_identity" ]] || die "setup: no identity set; pass --name <slug> --host <host>, or run \`kunskap config user\` first"
+    identity="$existing_identity"
+    echo "kunskap: setup [1/4] using existing identity $identity"
+  fi
+
+  if $do_init; then
+    echo "kunskap: setup [2/4] initializing vault at $vault"
+    local init_args=("$vault")
+    $yes && init_args+=(--yes)
+    cmd_init "${init_args[@]}"
+  else
+    echo "kunskap: setup [2/4] reusing existing vault at $vault"
+  fi
+
+  # Worktree-aware: `.git` is a file (not a dir) inside `git worktree add`'d
+  # checkouts, so `[[ -d .git ]]` would skip git worktrees. The repo's
+  # canonical detection helper is `git rev-parse --is-inside-work-tree`
+  # (matches cmd_lint:917; Pass-2 review).
+  local is_git_repo=false
+  git -C "$vault" rev-parse --is-inside-work-tree >/dev/null 2>&1 && is_git_repo=true
+
+  if $multiplayer; then
+    echo "kunskap: setup [3/4] setting curator + linter primaries to $identity"
+    set_role_primaries "$vault" "$identity"
+    # Multiplayer on a non-git vault: the mutation succeeded but no commit
+    # will fire below. Warn so the user knows to commit + push themselves.
+    $is_git_repo || echo "kunskap: setup: $vault is not a git repo; roles.toml was rewritten but not committed" >&2
+  else
+    echo "kunskap: setup [3/4] skipping multiplayer (roles stay TBD; solo-mode default)"
+  fi
+
+  # Commit shape splits on bootstrap vs. existing-vault: --init batches the
+  # entire scaffold (incl. multiplayer roles.toml) into a single baseline
+  # commit so \`learn status\` reports INBOX: 0 immediately. Plain bind
+  # commits only the roles.toml mutation, leaving the user's history alone.
+  # Push is best-effort; the no-remote-yet case is silent per Pass-1 review.
+  if $is_git_repo; then
+    local commit_msg=""
+    if $do_init; then
+      git -C "$vault" add -A
+      commit_msg="kunskap: vault scaffold ($(if $multiplayer; then echo "multiplayer, primaries=$identity"; else echo "solo"; fi))"
+    elif $multiplayer; then
+      git -C "$vault" add _meta/roles.toml
+      commit_msg="roles: set curator + linter primaries to $identity (kunskap setup)"
+    fi
+    if [[ -n "$commit_msg" ]] && ! git -C "$vault" diff --cached --quiet; then
+      git -C "$vault" \
+        -c "user.email=$identity@kunskap.local" \
+        -c "user.name=$identity" \
+        commit -q -m "$commit_msg"
+      local shared_value=""
+      shared_value="$(read_toml_field "$vault/_meta/kunskap.toml" vault shared 2>/dev/null || true)"
+      if [[ "$shared_value" == "true" ]] && git -C "$vault" remote get-url origin >/dev/null 2>&1; then
+        if git -C "$vault" push -q 2>/dev/null; then
+          echo "kunskap: setup: pushed scaffold to origin" >&2
+        else
+          echo "kunskap: setup: scaffold committed locally; push failed (run \`git -C $vault push\` after fixing)" >&2
+        fi
+      fi
+    fi
+  fi
+
+  # cwd must be the project — cmd_learn_enable reads it via project_dir().
+  echo "kunskap: setup [4/4] enabling kunskap in $(project_dir)"
+  local enable_args=(--vault "$vault")
+  $yes && enable_args+=(--yes)
+  cmd_learn_enable "${enable_args[@]}"
+
+  echo
+  echo "kunskap: setup complete. Status:"
+  cmd_learn_status
+}
+
 main() {
   # Pre-dispatch globals are consumed only when they precede the first
   # non-flag token; subcommand-local `--vault` (curate, learn enable) is
@@ -2237,6 +2428,7 @@ main() {
     audit-coverage)           cmd_audit_coverage "$@" ;;
     recall)                   cmd_recall "$@" ;;
     sync)                     cmd_sync "$@" ;;
+    setup)                    cmd_setup "$@" ;;
     *) die "unknown subcommand: $cmd (try \`kunskap help\`)" ;;
   esac
 }
