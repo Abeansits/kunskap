@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="1.0.1"
+VERSION="1.1.0"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/kunskap"
 IDENTITY_FILE="$CONFIG_DIR/identity.toml"
 
@@ -60,6 +60,7 @@ Usage:
   kunskap link-stubs --vault <abs-path> [--format text|json]
   kunskap audit-coverage --vault <abs-path> [--format text|json]
   kunskap recall <query> [--vault <abs-path>] [--author <X>] [--tag <Y>] [--limit <N>] [--format text|json]
+  kunskap sync   [--vault <abs-path>]
 
 Notes:
   --host is recommended on \`config user\`. Without it, host derives from
@@ -109,6 +110,12 @@ Notes:
   approve/reject perform git mv + a single commit; reject requires --reason.
 
   \`link-stubs\` and \`audit-coverage\` are pure-shell — no LLM, no auth.
+
+  \`sync\` is the manual flush — commits + pushes any uncommitted inbox
+  notes immediately. The PostToolUse hook covers most cases asynchronously;
+  use \`sync\` for retries (push failed earlier) or to deliberately flush
+  before disconnecting. Solo vaults exit 0 with a "not shared" message.
+  Identity must be set; rebase-in-progress refuses with an actionable hint.
 
   \`recall\` searches \`<vault>/wiki/\` and \`<vault>/raw/inbox/\` for the
   query. Stage 1 is \`rg --type md\` (load-bearing). Stage 2 is the Obsidian
@@ -361,6 +368,157 @@ validate_vault_loose() {
   [[ -d "$vault" ]] || die "--vault path is not a directory: $vault"
 }
 
+# ----- CLAUDE.md managed-block injection (v1.1) -----
+#
+# `learn enable` writes a managed block to <project>/CLAUDE.md so every
+# session in this project sees the capture+recall conventions without
+# depending on conductor-launched footers or auto-load-by-description.
+# `learn disable` removes the block, refusing if the user has hand-edited
+# inside the fence. Tamper detection: the block carries a sha256 of its
+# body in a comment line; mismatch on disable → refuse.
+
+claudemd_path() {
+  printf '%s/CLAUDE.md\n' "$(project_dir)"
+}
+
+# sha256 of stdin → bare hex on stdout. Portable across BSD shasum (macOS)
+# and coreutils sha256sum (Linux); both ship one or the other on the dev
+# boxes the plugin targets.
+sha256_hex() {
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 | awk '{print $1}'
+  else
+    sha256sum | awk '{print $1}'
+  fi
+}
+
+# Render the body that gets injected between BEGIN/END markers (after the
+# hash line). Concatenates templates/LAUNCH_FOOTER.md and the Recall
+# addendum. Hashed for tamper detection at disable time.
+render_claudemd_body() {
+  local template
+  template="$(plugin_root)/templates/LAUNCH_FOOTER.md"
+  [[ -f "$template" ]] || die "learn enable: missing $template (plugin install incomplete?)"
+  cat "$template"
+  cat <<'EOF'
+
+## Recall
+
+At the start of every new task, run `/kunskap:recall <keywords>` to surface prior learnings + research relevant to the goal. Incorporate matches before proceeding. Skip when the task is trivial (greetings, time queries, single-line tweaks).
+EOF
+}
+
+# Echo a path to a temp file containing the full managed block (BEGIN +
+# hash line + body + END). Caller cleans up.
+render_claudemd_block_file() {
+  local body_file block_file hash
+  body_file="$(mktemp -t kunskap-body.XXXXXX)"
+  block_file="$(mktemp -t kunskap-block.XXXXXX)"
+  render_claudemd_body > "$body_file"
+  hash="$(sha256_hex < "$body_file")"
+  {
+    printf '<!-- BEGIN kunskap (managed) -->\n'
+    printf '<!-- kunskap:hash %s -->\n' "$hash"
+    cat "$body_file"
+    printf '<!-- END kunskap (managed) -->\n'
+  } > "$block_file"
+  rm -f "$body_file"
+  printf '%s\n' "$block_file"
+}
+
+# Inject (or replace) the managed block in the project's CLAUDE.md.
+# Idempotent: a re-enable replaces the existing block in place. Surrounding
+# user content is preserved.
+inject_claudemd() {
+  local file block_file out
+  file="$(claudemd_path)"
+  block_file="$(render_claudemd_block_file)"
+  out="$(mktemp -t kunskap-claudemd.XXXXXX)"
+
+  if [[ -f "$file" ]] && grep -Fq '<!-- BEGIN kunskap (managed) -->' "$file"; then
+    # Replace block in place. awk swaps the BEGIN/body/END region for the
+    # contents of $block_file; surrounding lines pass through untouched.
+    awk -v new_block_file="$block_file" '
+      $0 == "<!-- BEGIN kunskap (managed) -->" {
+        while ((getline line < new_block_file) > 0) print line
+        close(new_block_file)
+        in_block = 1
+        next
+      }
+      in_block && $0 == "<!-- END kunskap (managed) -->" { in_block = 0; next }
+      !in_block { print }
+    ' "$file" > "$out"
+  elif [[ -f "$file" && -s "$file" ]]; then
+    # Append to existing non-empty file with a blank-line separator. Ensure
+    # the existing content ends with a newline so the separator is real.
+    cp "$file" "$out"
+    if [[ -n "$(tail -c1 "$out")" ]]; then printf '\n' >> "$out"; fi
+    printf '\n' >> "$out"
+    cat "$block_file" >> "$out"
+  else
+    # No file (or empty file) — fresh write.
+    cat "$block_file" > "$out"
+  fi
+
+  mkdir -p "$(dirname "$file")"
+  mv "$out" "$file"
+  rm -f "$block_file"
+}
+
+# Remove the managed block from the project's CLAUDE.md. die()s with an
+# actionable message if the body inside the fence has been hand-edited
+# (sha256 mismatch with the stored hash on the first line of the block).
+# Deletes the file entirely if removal leaves only whitespace.
+remove_claudemd() {
+  local file
+  file="$(claudemd_path)"
+  [[ -f "$file" ]] || return 0
+  if ! grep -Fq '<!-- BEGIN kunskap (managed) -->' "$file"; then
+    return 0
+  fi
+
+  local block_body
+  block_body="$(mktemp -t kunskap-block-body.XXXXXX)"
+  awk '
+    $0 == "<!-- BEGIN kunskap (managed) -->" { in_block = 1; next }
+    $0 == "<!-- END kunskap (managed) -->"   { in_block = 0; next }
+    in_block { print }
+  ' "$file" > "$block_body"
+
+  local hash_line stored_hash
+  hash_line="$(head -n1 "$block_body")"
+  local hash_re='^<!-- kunskap:hash ([a-f0-9]{64}) -->$'
+  if [[ ! "$hash_line" =~ $hash_re ]]; then
+    rm -f "$block_body"
+    die "learn disable: managed block in $file lacks fingerprint — manual edits suspected. Remove the block manually before re-enabling."
+  fi
+  stored_hash="${BASH_REMATCH[1]}"
+
+  local body current_hash
+  body="$(mktemp -t kunskap-body-current.XXXXXX)"
+  tail -n +2 "$block_body" > "$body"
+  current_hash="$(sha256_hex < "$body")"
+  rm -f "$block_body" "$body"
+
+  if [[ "$current_hash" != "$stored_hash" ]]; then
+    die "learn disable: manual edits detected inside managed block in $file (review before disable)"
+  fi
+
+  local out
+  out="$(mktemp -t kunskap-claudemd-out.XXXXXX)"
+  awk '
+    $0 == "<!-- BEGIN kunskap (managed) -->" { in_block = 1; next }
+    $0 == "<!-- END kunskap (managed) -->"   { if (in_block) { in_block = 0; next } }
+    !in_block { print }
+  ' "$file" > "$out"
+
+  if grep -q '[^[:space:]]' "$out" 2>/dev/null; then
+    mv "$out" "$file"
+  else
+    rm -f "$out" "$file"
+  fi
+}
+
 cmd_learn_enable() {
   local vault="" yes=false extra=()
   while [[ $# -gt 0 ]]; do
@@ -405,6 +563,7 @@ cmd_learn_enable() {
   "confirmed_at": "$confirmed_at"
 }
 EOF
+  inject_claudemd
   echo "kunskap: enabled in $proj. Vault: $vault. Run \`kunskap learn status\` (or /kunskap:learn status) to verify."
 }
 
@@ -417,6 +576,7 @@ cmd_learn_disable() {
     echo "kunskap: not enabled in $proj (no marker at $marker)"
     return 0
   fi
+  remove_claudemd
   rm -f "$marker"
   echo "kunskap: disabled in $proj (removed $marker)"
 }
@@ -515,6 +675,19 @@ cmd_learn_status() {
     fi
   else
     echo "CONFIRMED: <unset>"
+  fi
+
+  # v1.1 visibility nudge: count uncommitted inbox notes so the user sees
+  # a non-zero number BEFORE the next session's first inbox write triggers
+  # an async push that hides the backlog.
+  if [[ -n "$vault" && -d "$vault/.git" && -d "$vault/raw/inbox" ]]; then
+    local pending
+    pending=$(git -C "$vault" status --porcelain -- raw/inbox 2>/dev/null | wc -l | awk '{print $1}')
+    if [[ "$pending" -gt 0 ]]; then
+      echo "INBOX: $pending uncommitted note$([[ "$pending" == "1" ]] || echo s) — run \`/kunskap:sync\` (or \`kunskap sync\`) to flush"
+    else
+      echo "INBOX: 0 uncommitted notes"
+    fi
   fi
 }
 
@@ -1739,6 +1912,62 @@ run_obsidian_recall() {
     || return 1
 }
 
+cmd_sync() {
+  local vault_flag="$GLOBAL_VAULT"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --vault) require_value --vault "${2-__MISSING__}"; vault_flag="$2"; shift 2 ;;
+      *) die "sync: unknown arg: $1" ;;
+    esac
+  done
+
+  local vault
+  vault="$(resolve_vault_flag_or_marker sync "$vault_flag")"
+  [[ -d "$vault" ]] || die "sync: vault $vault does not exist"
+
+  local who
+  who="$(compute_identity_string)" \
+    || die "sync: identity not set — run \`kunskap config user --name <slug> --host <host>\`"
+
+  local shared
+  shared="$(read_toml_field "$vault/_meta/kunskap.toml" vault shared 2>/dev/null || true)"
+  if [[ "$shared" != "true" ]]; then
+    echo "kunskap sync: vault is not shared (shared = ${shared:-unset} in $vault/_meta/kunskap.toml). Solo vaults never push."
+    return 0
+  fi
+
+  if [[ -d "$vault/.git/rebase-merge" || -d "$vault/.git/rebase-apply" ]]; then
+    die "sync: rebase in progress at $vault — resolve with \`git -C $vault rebase --continue\` (or \`--abort\`) before re-running"
+  fi
+
+  cd "$vault" || die "sync: cannot cd to vault $vault"
+  git rev-parse --git-dir >/dev/null 2>&1 \
+    || die "sync: $vault is not a git repository (run \`kunskap init\` first)"
+
+  git add raw/inbox 2>/dev/null \
+    || die "sync: \`git add raw/inbox\` failed (vault not initialized?)"
+
+  if git diff --cached --quiet 2>/dev/null; then
+    echo "kunskap sync: nothing to sync (inbox clean)"
+    return 0
+  fi
+
+  local count
+  count=$(git diff --cached --name-only -- raw/inbox/ | wc -l | awk '{print $1}')
+
+  git commit --quiet -m "kunskap: inbox sync (manual, ${who})" \
+    || die "sync: commit failed (check \`git status\` in $vault)"
+
+  # Manual lever reports errors clearly — unlike the silent async hook.
+  if ! git push --quiet 2>/dev/null; then
+    die "sync: push failed (check remote / network); commit landed locally and will retry on next sync"
+  fi
+
+  local s=""
+  [[ "$count" != "1" ]] && s="s"
+  echo "kunskap sync: synced ${count} note${s} (committed + pushed)"
+}
+
 cmd_recall() {
   local vault_flag="$GLOBAL_VAULT" author="" tag="" limit=20 format="text"
   local query_tokens=()
@@ -1941,6 +2170,7 @@ main() {
     link-stubs)               cmd_link_stubs "$@" ;;
     audit-coverage)           cmd_audit_coverage "$@" ;;
     recall)                   cmd_recall "$@" ;;
+    sync)                     cmd_sync "$@" ;;
     *) die "unknown subcommand: $cmd (try \`kunskap help\`)" ;;
   esac
 }
