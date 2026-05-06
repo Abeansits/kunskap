@@ -35,23 +35,6 @@ write_marker() {
   KUNSKAP_AUTO_CONFIRM=1 "$KUNSKAP_BIN" learn enable --vault "$vault" >/dev/null
 }
 
-# Init a shared vault git repo at $1, optional remote at $2.
-make_shared_vault() {
-  local vault="$1" remote="${2-}"
-  mkdir -p "$vault/_meta" "$vault/raw/inbox"
-  cat > "$vault/_meta/kunskap.toml" <<EOF
-[vault]
-name = "smoke-vault"
-shared = true
-EOF
-  ( cd "$vault" \
-    && git init -q \
-    && git config user.email smoke@bats \
-    && git config user.name  smoke \
-    && [[ -n "$remote" ]] && git remote add origin "$remote" || true
-    git add . && git commit -q -m "smoke: seed" )
-}
-
 # ---------- session-start.sh fail-soft paths ----------
 
 @test "session-start: no marker → silent exit 0" {

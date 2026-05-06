@@ -165,3 +165,47 @@ name  = "$name"
 host  = "$host"
 EOF
 }
+
+# Build a shared (`shared = true`) vault at $1 with a single seed commit
+# and an optional remote at $2. Three v1.1 bats files all built this from
+# scratch; consolidated here.
+make_shared_vault() {
+  local vault="$1" remote="${2-}" name="${3:-shared-vault}"
+  mkdir -p "$vault/_meta" "$vault/raw/inbox"
+  cat > "$vault/_meta/kunskap.toml" <<EOF
+[vault]
+name = "$name"
+shared = true
+EOF
+  (
+    cd "$vault"
+    git init -q
+    git config user.email smoke@bats
+    git config user.name  smoke
+    [[ -n "$remote" ]] && git remote add origin "$remote" || true
+    git add .
+    git commit -q -m "smoke: seed"
+  )
+}
+
+# Build a solo (`shared = false`) vault at $1 with a single seed commit.
+make_solo_vault() {
+  local vault="$1" name="${2:-solo-vault}"
+  mkdir -p "$vault/_meta" "$vault/raw/inbox"
+  cat > "$vault/_meta/kunskap.toml" <<EOF
+[vault]
+name = "$name"
+shared = false
+EOF
+  (
+    cd "$vault"
+    git init -q
+    git config user.email smoke@bats
+    git config user.name  smoke
+    git add .
+    git commit -q -m "smoke: seed solo"
+  )
+}
+
+# Bare repo for tests asserting push lands.
+make_bare_remote() { git init -q --bare "$1"; }

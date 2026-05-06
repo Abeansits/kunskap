@@ -39,12 +39,10 @@ fi
 ( cd "$vault" && git pull --rebase --autostash --quiet ) \
   || echo "Kunskap: vault pull failed; continuing with local copy" >&2
 
-# v1.1 passive nudge: if a previous session left uncommitted inbox notes
-# (PostToolUse hook didn't run to completion — SIGKILL / SIGHUP / network
-# blip during push), surface the count once at session start. One git
-# call, no hot-path cost.
+# Passive nudge: surface uncommitted inbox notes left by a prior session
+# (rare — needs the PostToolUse hook to have died mid-commit / mid-push).
 if [[ -d "$vault/raw/inbox" ]]; then
-  pending=$(git -C "$vault" status --porcelain -- raw/inbox 2>/dev/null | wc -l | awk '{print $1}')
+  pending=$(git -C "$vault" status --porcelain -- raw/inbox 2>/dev/null | grep -c . || true)
   if [[ "$pending" -gt 0 ]]; then
     echo "Kunskap: vault pulled. ⚠ $pending uncommitted inbox note(s) from prior session — run /kunskap:sync to push." >&2
   fi

@@ -223,6 +223,14 @@ check_role() {
   return 0
 }
 
+# Count uncommitted inbox notes in a vault. Echoes a bare integer (0 if the
+# inbox is clean or the vault isn't a git repo).
+count_uncommitted_inbox() {
+  local vault="$1"
+  [[ -d "$vault/.git" && -d "$vault/raw/inbox" ]] || { echo 0; return; }
+  git -C "$vault" status --porcelain -- raw/inbox 2>/dev/null | grep -c . || true
+}
+
 # Mid-rebase / merge / cherry-pick guard. Refuse if the vault is in a git
 # rewrite (P2 §3 mid-rebase wedge → P4 lint preflight → P5 curate preflight).
 mid_rebase_guard() {
@@ -368,14 +376,10 @@ validate_vault_loose() {
   [[ -d "$vault" ]] || die "--vault path is not a directory: $vault"
 }
 
-# ----- CLAUDE.md managed-block injection (v1.1) -----
-#
-# `learn enable` writes a managed block to <project>/CLAUDE.md so every
-# session in this project sees the capture+recall conventions without
-# depending on conductor-launched footers or auto-load-by-description.
-# `learn disable` removes the block, refusing if the user has hand-edited
-# inside the fence. Tamper detection: the block carries a sha256 of its
-# body in a comment line; mismatch on disable → refuse.
+# ----- CLAUDE.md managed-block injection -----
+# `learn enable` injects a managed block; `learn disable` removes it.
+# Tamper detection: the block's first line carries a sha256 of the body;
+# mismatch on disable refuses rather than silently nuking user edits.
 
 claudemd_path() {
   printf '%s/CLAUDE.md\n' "$(project_dir)"
@@ -677,14 +681,14 @@ cmd_learn_status() {
     echo "CONFIRMED: <unset>"
   fi
 
-  # v1.1 visibility nudge: count uncommitted inbox notes so the user sees
-  # a non-zero number BEFORE the next session's first inbox write triggers
-  # an async push that hides the backlog.
+  # Surface uncommitted inbox notes BEFORE the next session's PostToolUse
+  # push hides the backlog.
   if [[ -n "$vault" && -d "$vault/.git" && -d "$vault/raw/inbox" ]]; then
-    local pending
-    pending=$(git -C "$vault" status --porcelain -- raw/inbox 2>/dev/null | wc -l | awk '{print $1}')
+    local pending s=""
+    pending=$(count_uncommitted_inbox "$vault")
     if [[ "$pending" -gt 0 ]]; then
-      echo "INBOX: $pending uncommitted note$([[ "$pending" == "1" ]] || echo s) — run \`/kunskap:sync\` (or \`kunskap sync\`) to flush"
+      [[ "$pending" != "1" ]] && s="s"
+      echo "INBOX: $pending uncommitted note$s — run \`/kunskap:sync\` (or \`kunskap sync\`) to flush"
     else
       echo "INBOX: 0 uncommitted notes"
     fi
@@ -1936,9 +1940,7 @@ cmd_sync() {
     return 0
   fi
 
-  if [[ -d "$vault/.git/rebase-merge" || -d "$vault/.git/rebase-apply" ]]; then
-    die "sync: rebase in progress at $vault — resolve with \`git -C $vault rebase --continue\` (or \`--abort\`) before re-running"
-  fi
+  mid_rebase_guard "$vault" sync
 
   cd "$vault" || die "sync: cannot cd to vault $vault"
   git rev-parse --git-dir >/dev/null 2>&1 \
@@ -1953,12 +1955,11 @@ cmd_sync() {
   fi
 
   local count
-  count=$(git diff --cached --name-only -- raw/inbox/ | wc -l | awk '{print $1}')
+  count=$(git diff --cached --name-only -- raw/inbox/ | grep -c . || true)
 
   git commit --quiet -m "kunskap: inbox sync (manual, ${who})" \
     || die "sync: commit failed (check \`git status\` in $vault)"
 
-  # Manual lever reports errors clearly — unlike the silent async hook.
   if ! git push --quiet 2>/dev/null; then
     die "sync: push failed (check remote / network); commit landed locally and will retry on next sync"
   fi

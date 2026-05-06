@@ -15,41 +15,12 @@ teardown() {
 
 set_identity() { write_identity_toml "$TMPXDG"; }
 
-make_shared_vault() {
-  local vault="$1" remote="${2-}"
-  mkdir -p "$vault/_meta" "$vault/raw/inbox"
-  cat > "$vault/_meta/kunskap.toml" <<EOF
-[vault]
-name = "sync-vault"
-shared = true
-EOF
-  (
-    cd "$vault"
-    git init -q
-    git config user.email s@b
-    git config user.name s
-    [[ -n "$remote" ]] && git remote add origin "$remote" || true
-    git add .
-    git commit -q -m "seed"
-  )
-}
-
-make_solo_vault() {
-  local vault="$1"
-  mkdir -p "$vault/_meta" "$vault/raw/inbox"
-  cat > "$vault/_meta/kunskap.toml" <<EOF
-[vault]
-shared = false
-EOF
-  ( cd "$vault" && git init -q && git config user.email s@b && git config user.name s && git add . && git commit -q -m seed )
-}
-
 # ---------- happy + idempotent paths ----------
 
 @test "sync: happy path — commits + pushes new inbox note against bare remote" {
   set_identity
   bare="$(mktemp -d)"
-  git init -q --bare "$bare"
+  make_bare_remote "$bare"
   vault="$(mktemp -d)"
   make_shared_vault "$vault" "$bare"
   ( cd "$vault" && git push -q -u origin HEAD:main )
@@ -124,7 +95,7 @@ EOF
 
   run "$KUNSKAP_BIN" sync
   [[ "$status" -ne 0 ]]
-  [[ "$output" == *"rebase in progress"* ]]
+  [[ "$output" == *"mid-rebase"* || "$output" == *"rebase in progress"* ]]
   [[ "$output" == *"rebase --continue"* || "$output" == *"--abort"* ]]
   rm -rf "$vault"
 }
@@ -156,7 +127,7 @@ EOF
 @test "sync: --vault flag overrides marker" {
   set_identity
   bare="$(mktemp -d)"
-  git init -q --bare "$bare"
+  make_bare_remote "$bare"
   vault="$(mktemp -d)"
   make_shared_vault "$vault" "$bare"
   ( cd "$vault" && git push -q -u origin HEAD:main )
@@ -182,7 +153,7 @@ EOF
 @test "sync: pluralizes correctly for >1 note" {
   set_identity
   bare="$(mktemp -d)"
-  git init -q --bare "$bare"
+  make_bare_remote "$bare"
   vault="$(mktemp -d)"
   make_shared_vault "$vault" "$bare"
   ( cd "$vault" && git push -q -u origin HEAD:main )

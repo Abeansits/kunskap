@@ -32,29 +32,6 @@ write_marker() {
   KUNSKAP_AUTO_CONFIRM=1 "$KUNSKAP_BIN" learn enable --vault "$1" >/dev/null
 }
 
-# Init a shared vault git repo at $1 with an inbox/, optional remote at $2.
-make_shared_vault() {
-  local vault="$1" remote="${2-}"
-  mkdir -p "$vault/_meta" "$vault/raw/inbox"
-  cat > "$vault/_meta/kunskap.toml" <<EOF
-[vault]
-name = "post-write-vault"
-shared = true
-EOF
-  (
-    cd "$vault"
-    git init -q
-    git config user.email smoke@bats
-    git config user.name  smoke
-    [[ -n "$remote" ]] && git remote add origin "$remote" || true
-    git add .
-    git commit -q -m "smoke: seed"
-  )
-}
-
-# Init a bare repo at $1 to act as `origin` for pushes that should succeed.
-make_bare_remote() { git init -q --bare "$1"; }
-
 run_hook() {
   local payload="$1"
   printf '%s' "$payload" | "$POST_WRITE"
