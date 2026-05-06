@@ -440,15 +440,21 @@ inject_claudemd() {
   out="$(mktemp -t kunskap-claudemd.XXXXXX)"
 
   if [[ -f "$file" ]] && grep -Fq '<!-- BEGIN kunskap (managed) -->' "$file"; then
-    # Refuse on garbled markers: nested BEGIN duplicates the block on
-    # replacement, and a missing END would drop all trailing user content
-    # because awk's in_block flag would never flip off.
-    local n_begin n_end
-    n_begin=$(grep -Fc '<!-- BEGIN kunskap (managed) -->' "$file" 2>/dev/null || echo 0)
-    n_end=$(grep -Fc '<!-- END kunskap (managed) -->' "$file" 2>/dev/null || echo 0)
-    if [[ "$n_begin" != "1" || "$n_end" != "1" ]]; then
+    # Refuse on garbled markers. Two divergence modes the awk replacement
+    # can't survive:
+    #   - count != 1: nested BEGIN duplicates the block, missing END drops
+    #     all trailing user content (in_block never flips off).
+    #   - exact-line count != loose count: marker has leading or trailing
+    #     whitespace (or sits inside another line) — grep -F finds it but
+    #     awk's `$0 == "..."` won't, leading to a silent non-replacement.
+    local n_begin n_end nl_begin nl_end
+    n_begin=$(grep -Fxc '<!-- BEGIN kunskap (managed) -->' "$file" 2>/dev/null || echo 0)
+    n_end=$(grep -Fxc '<!-- END kunskap (managed) -->' "$file" 2>/dev/null || echo 0)
+    nl_begin=$(grep -Fc '<!-- BEGIN kunskap (managed) -->' "$file" 2>/dev/null || echo 0)
+    nl_end=$(grep -Fc '<!-- END kunskap (managed) -->' "$file" 2>/dev/null || echo 0)
+    if [[ "$n_begin" != "1" || "$n_end" != "1" || "$nl_begin" != "$n_begin" || "$nl_end" != "$n_end" ]]; then
       rm -f "$block_file" "$out"
-      die "learn enable: $file has malformed managed-block markers (BEGIN=$n_begin, END=$n_end; expected 1 each). Repair manually before re-enabling."
+      die "learn enable: $file has malformed managed-block markers (BEGIN exact=$n_begin loose=$nl_begin, END exact=$n_end loose=$nl_end; expected 1 each as full-line matches with no surrounding whitespace). Repair manually before re-enabling."
     fi
     # Replace block in place. awk swaps the BEGIN/body/END region for the
     # contents of $block_file; surrounding lines pass through untouched.
@@ -520,10 +526,21 @@ remove_claudemd() {
 
   local out
   out="$(mktemp -t kunskap-claudemd-out.XXXXXX)"
+  # Drop the contiguous blank line(s) immediately preceding BEGIN — that's
+  # the separator inject_claudemd added when appending. Without this, an
+  # enable+disable round-trip leaves an extra blank line at file-end.
+  # Trailing blanks AFTER END are preserved (buffered, then flushed on the
+  # next non-blank line, dropped at EOF).
   awk '
-    $0 == "<!-- BEGIN kunskap (managed) -->" { in_block = 1; next }
+    $0 == "<!-- BEGIN kunskap (managed) -->" { in_block = 1; blanks = 0; next }
     $0 == "<!-- END kunskap (managed) -->"   { if (in_block) { in_block = 0; next } }
-    !in_block { print }
+    in_block { next }
+    /^$/ { blanks++; next }
+    {
+      while (blanks-- > 0) print ""
+      blanks = 0
+      print
+    }
   ' "$file" > "$out"
 
   if grep -q '[^[:space:]]' "$out" 2>/dev/null; then
@@ -544,10 +561,11 @@ cmd_learn_enable() {
   done
   [[ -n "$vault" ]] || die "learn enable: --vault <abs-path> is required"
   [[ ${#extra[@]} -eq 0 ]] || die "learn enable: unknown extra args: ${extra[*]}"
-  # Strip trailing slash so the marker is canonical; avoids `/path//raw/inbox`
-  # downstream when the hook builds the inbox-prefix string.
-  vault="${vault%/}"
   validate_vault_loose "$vault"
+  # Canonicalize the vault path so the marker stores a physical, normalized
+  # absolute path. Without this, multi-slash / `.` segment / symlinked vault
+  # paths would defeat the hook's inbox-prefix string match.
+  vault="$(cd "$vault" && pwd -P)"
 
   # Risk #7 (vault-leak between projects) mitigation. The marker file is the
   # privacy primitive — wrong vault = personal notes pushed to the team's

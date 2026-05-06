@@ -43,14 +43,23 @@ esac
 
 # Cheap inbox-prefix filter against the marker's vault path. Skips the
 # expensive identity / shared / rebase checks for the 99% non-inbox case.
-# Strip trailing slash from the marker value so a vault written as
-# `/path/` produces `/path/raw/inbox/...` rather than `/path//raw/inbox`,
-# which would silently miss canonical `file_path` strings from the agent.
+# Both sides are canonicalized so multi-slash / `.` segments / symlinks
+# don't defeat the prefix match. (Defense in depth — `learn enable` also
+# canonicalizes at write-side.)
 vault_from_marker="$(jq -r '.vault // empty' "$marker" 2>/dev/null || true)"
-[[ -n "$vault_from_marker" ]] || exit 0
-vault_from_marker="${vault_from_marker%/}"
-inbox="$vault_from_marker/raw/inbox"
-case "$file_path" in
+[[ -n "$vault_from_marker" && -d "$vault_from_marker" ]] || exit 0
+vault_canonical="$(cd "$vault_from_marker" 2>/dev/null && pwd -P)"
+[[ -n "$vault_canonical" ]] || exit 0
+inbox="$vault_canonical/raw/inbox"
+[[ -d "$inbox" ]] || exit 0
+
+# Resolve file_path to its physical absolute. PostToolUse fires after the
+# Write/Edit lands, so the file (or at minimum its parent dir) exists.
+file_dir_canonical="$(cd "$(dirname "$file_path")" 2>/dev/null && pwd -P)"
+[[ -n "$file_dir_canonical" ]] || exit 0
+file_canonical="$file_dir_canonical/$(basename "$file_path")"
+
+case "$file_canonical" in
   "$inbox"/*) ;;
   *) exit 0 ;;
 esac

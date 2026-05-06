@@ -184,6 +184,31 @@ EOF
   rm -rf "$vault"
 }
 
+@test "post-write-sync: marker vault with multi-trailing-slash + dot segment still matches" {
+  bare="$(mktemp -d -t kunskap-bare.XXXXXX)"
+  make_bare_remote "$bare"
+  vault="$(mktemp -d -t kunskap-vault.XXXXXX)"
+  make_shared_vault "$vault" "$bare"
+  ( cd "$vault" && git push -q -u origin HEAD:main )
+  set_identity
+  mkdir -p "$TMPPROJ/.claude"
+  # Pathologically non-canonical marker: multiple trailing slashes + a `.`
+  # segment. Without realpath canonicalization in the hook, the inbox
+  # prefix would never match the agent's canonical file_path.
+  cat > "$TMPPROJ/.claude/kunskap.json" <<EOF
+{"vault": "$vault/./", "enabled": true, "confirmed_at": "2026-05-06T00:00:00Z"}
+EOF
+
+  note="$vault/raw/inbox/learning-canonical.md"
+  echo "body" > "$note"
+  payload="$(jq -n --arg p "$note" '{tool_input:{file_path:$p}}')"
+  run run_hook "$payload"
+
+  [[ "$status" -eq 0 ]]
+  ( cd "$vault" && git log --oneline | head -1 ) | grep -Fq 'kunskap: inbox capture (auto'
+  rm -rf "$vault" "$bare"
+}
+
 @test "post-write-sync: marker vault with trailing slash still matches inbox writes" {
   bare="$(mktemp -d -t kunskap-bare.XXXXXX)"
   make_bare_remote "$bare"

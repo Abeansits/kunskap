@@ -157,6 +157,43 @@ EOF
   grep -Fq 'User content that would be silently dropped' "$(claudemd)"
 }
 
+@test "learn enable + disable round-trip is byte-exact on realistic CLAUDE.md" {
+  cd "$TMPPROJ"
+  cat > "$(claudemd)" <<'EOF'
+# My project
+
+Some lead-in prose explaining the project.
+
+## Style
+
+- Use kebab-case for filenames
+- Run tests before committing
+
+## Build
+
+```bash
+make test
+make build
+```
+
+End of file.
+EOF
+  before="$(shasum "$(claudemd)" | awk '{print $1}')"
+  KUNSKAP_AUTO_CONFIRM=1 "$KUNSKAP_BIN" learn enable --vault "$vault" >/dev/null
+  "$KUNSKAP_BIN" learn disable >/dev/null
+  after="$(shasum "$(claudemd)" | awk '{print $1}')"
+  [[ "$before" == "$after" ]] || { echo "drift detected:"; diff <(printf '%s' "$before") <(printf '%s' "$after"); echo "---file---"; cat -A "$(claudemd)"; false; }
+}
+
+@test "learn enable refuses on whitespace-corrupted markers (grep/awk divergence guard)" {
+  cd "$TMPPROJ"
+  printf '<!-- BEGIN kunskap (managed) -->  \nbody\n<!-- END kunskap (managed) -->\n' > "$(claudemd)"
+  run bash -c "KUNSKAP_AUTO_CONFIRM=1 '$KUNSKAP_BIN' learn enable --vault '$vault'"
+  [[ "$status" -ne 0 ]]
+  [[ "$output" == *"malformed"* ]]
+  [[ "$output" == *"surrounding whitespace"* || "$output" == *"loose"* ]]
+}
+
 @test "learn enable refuses on duplicated BEGIN markers (would duplicate the block)" {
   cd "$TMPPROJ"
   cat > "$(claudemd)" <<'EOF'
