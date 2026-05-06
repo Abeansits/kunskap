@@ -385,7 +385,7 @@ The `marketplace.json` content lists the kunskap plugin and its source repo. See
     /plugin install kunskap@kunskap-marketplace
 
 ## Configure your identity (one-time, per machine)
-    kunskap config user --name alice --email alice@example.com --host laptop
+    kunskap config user --name charlie --email charlie@example.com --host desktop
 
 (The explicit --host avoids breakage if your machine gets renamed; see "Identity fragility" in the design doc.)
 
@@ -396,8 +396,8 @@ The `marketplace.json` content lists the kunskap plugin and its source repo. See
 
 ## Verify
     /kunskap:learn status
-    # → enabled  vault: ~/Projects/kunskap-research  identity: alice@laptop  shared: true
-    #   role-check: not primary curator (bob@desktop is); curator runs by bob only
+    # → enabled  vault: ~/Projects/kunskap-research  identity: charlie@desktop  shared: true
+    #   role-check: not primary (curator: alice@laptop; linter: bob@desktop)
 ```
 
 ### Fallbacks

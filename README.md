@@ -39,7 +39,7 @@ kunskap whoami
 
 Kunskap fires only in projects you've opted in. Running `/kunskap:learn enable --vault <path>` writes a `.claude/kunskap.json` marker to the project; without that marker, the plugin's hooks no-op silently and the `kunskap-vault` skill doesn't auto-load. The marker carries the absolute vault path, an `enabled: true` flag, and a `confirmed_at` timestamp.
 
-Multiple projects can point at the same vault — common when a team has one research vault and several code repos that contribute to it. The vault path is unconstrained: you choose where on disk it lives. `/kunskap:learn status` prints the resolved vault and stamp age; the linter flags >30d marker staleness as a privacy nudge (Risk #7).
+Multiple projects can point at the same vault — common when a team has one research vault and several code repos that contribute to it. The vault path is unconstrained: you choose where on disk it lives. `/kunskap:learn status` prints the resolved vault and stamp age, and warns when the confirmation is >30 days old as a privacy nudge (Risk #7).
 
 ## The three core flows
 
