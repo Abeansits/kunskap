@@ -386,3 +386,18 @@ EOF
   fn_body cmd_curate | grep -qE 'curator_tools="[^"]*Agent'
   fn_body cmd_lint   | grep -qE 'linter_tools="[^"]*Agent'
 }
+
+@test "cmd_lint allow-list covers awk + find + xargs (MUST 3 frontmatter parsing)" {
+  # agents/linter.md §Frontmatter parsing mandates the canonical anchor-to-
+  # NR==1 awk recipe for every draft's `created:` / `deferred_at:` parse
+  # (MUST 3 staleness), and `find … | xargs awk` for single-pass bulk
+  # parsing (agents/linter.md:152). The first smoke missed this because
+  # the smoke vault had no stale drafts; any production vault with
+  # wiki/_drafts/*.md triggers silent denials without these. Pass-1 review
+  # gap, locked here to prevent regression.
+  local body
+  body="$(fn_body cmd_lint)"
+  echo "$body" | grep -q 'Bash(awk:\*)'
+  echo "$body" | grep -q 'Bash(find:\*)'
+  echo "$body" | grep -q 'Bash(xargs:\*)'
+}

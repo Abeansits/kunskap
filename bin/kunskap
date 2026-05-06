@@ -735,6 +735,13 @@ Do NOT attempt the audit yourself; the linter subagent must own it. Do NOT write
   linter_tools+=",Bash(git add _meta/last-run/linter.json),Bash(git -C * add _meta/last-run/linter.json)"
   linter_tools+=",Bash(git commit:*),Bash(git -C * commit:*)"
   linter_tools+=",Bash(mkdir:*),Bash(jq:*),Bash(tee:*),Bash(date:*),Bash(grep:*),Bash(sort:*),Bash(uniq:*),Bash(kunskap:*)"
+  # awk + find + xargs are mandated by agents/linter.md §Frontmatter parsing:
+  # the canonical anchor-to-NR==1 awk recipe parses each draft's `created:` /
+  # `deferred_at:` for MUST 3 staleness, and `find … | xargs awk` is the
+  # single-pass bulk-parsing recipe (agents/linter.md:152). Smoke missed this
+  # because the smoke vault had no stale drafts; any production vault with
+  # wiki/_drafts/*.md will trigger silent denials without these.
+  linter_tools+=",Bash(awk:*),Bash(find:*),Bash(xargs:*)"
   local agent_out agent_status
   if agent_out="$( cd "$vault" && claude --add-dir "$vault" --plugin-dir "$root" --allowed-tools "$linter_tools" --permission-mode dontAsk -p "$prompt" )"; then
     agent_status=0
