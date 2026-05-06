@@ -331,8 +331,10 @@ EOF
   # Curator runs locally; pushing is the SessionEnd hook's job (P2). If a
   # future change adds `Bash(git push:*)` to the curator allow-list it's
   # almost certainly a mistake — the agent shouldn't push.
-  ! fn_body cmd_curate | grep -qE 'Bash\(git push'
-  ! fn_body cmd_curate | grep -qE 'Bash\(git -C \* push'
+  local body
+  body="$(fn_body cmd_curate)"
+  ! echo "$body" | grep -qE 'Bash\(git push'
+  ! echo "$body" | grep -qE 'Bash\(git -C \* push'
 }
 
 @test "cmd_lint allow-list is tighter than cmd_curate's (read-only invariant)" {

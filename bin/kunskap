@@ -588,7 +588,7 @@ Report the curator's summary back when it returns."
   # sandbox is CWD-scoped; --plugin-dir + \$ARGUMENTS aren't enough).
   #
   # Permissions: --permission-mode dontAsk + --allowed-tools allow-list
-  # (v1.0.1 fix — canonical Claude Code docs §Permission modes). acceptEdits
+  # (canonical Claude Code docs §Permission modes). acceptEdits
   # auto-approves Edit/Write + filesystem ops (mkdir/mv/cp) but NOT Bash git
   # ops; in headless mode an unmatched git op falls through to the canUseTool
   # callback that doesn't exist, hanging or aborting the run. dontAsk converts
@@ -694,7 +694,7 @@ After the audit, instruct the linter to record the run by writing \`_meta/last-r
   findings_count: <integer count of findings emitted>
   forced: $forced_json
 
-IMPORTANT — bash redirect workaround (v1.0.1 empirical finding): the linter agent's frontmatter disallows the Write/Edit tools (read-only invariant defense in depth), so the run-record write must go through Bash. The headless permission engine does NOT match per-tool rules like \`Bash(jq:*)\` against commands containing \`>\` shell redirection (the redirect operator becomes a separate tool-input field that defeats prefix matching). Use the \`tee\` form instead — \`jq -n ... | tee \$VAULT/_meta/last-run/linter.json\` — which the engine parses as two pipe-split subcommands that each match their own allow-rule. Stdout duplication from \`tee\` is harmless (it goes to the agent's tool result, not the user-facing findings stream).
+IMPORTANT — bash redirect workaround: the linter agent's frontmatter disallows the Write/Edit tools (read-only invariant defense in depth), so the run-record write must go through Bash. The headless permission engine does NOT match per-tool rules like \`Bash(jq:*)\` against commands containing \`>\` shell redirection (the redirect operator becomes a separate tool-input field that defeats prefix matching). Use the \`tee\` form instead — \`jq -n ... | tee \$VAULT/_meta/last-run/linter.json\` — which the engine parses as two pipe-split subcommands that each match their own allow-rule. Stdout duplication from \`tee\` is harmless (it goes to the agent's tool result, not the user-facing findings stream).
 
 Do NOT attempt the audit yourself; the linter subagent must own it. Do NOT write any path other than \`_meta/last-run/linter.json\` — the CLI invariant check will fail the run if the linter touches anything else (including _meta/last-run/curator.json). Do not modify this plugin repo. Report the linter's audit output verbatim (the run-record commit is metadata, not part of the findings stdout)."
 
@@ -704,8 +704,8 @@ Do NOT attempt the audit yourself; the linter subagent must own it. Do NOT write
   # Capture exit code WITHOUT `if !` — the negated form sets $? to 0 (the
   # status of `!` itself), losing the real claude failure code (P4 §1).
   #
-  # Permissions: same shape as cmd_curate's allow-list (v1.0.1 fix), but
-  # TIGHTER to reflect the linter's read-only invariant (MUST 8). Differences:
+  # Permissions: same shape as cmd_curate's allow-list, but TIGHTER to
+  # reflect the linter's read-only invariant (MUST 8). Differences:
   #   - No Edit/MultiEdit — linter never modifies existing files.
   #   - Write is in the parent allow-list but the linter agent's frontmatter
   #     `disallowedTools: Write, Edit` denies it for the linter subagent
@@ -714,9 +714,9 @@ Do NOT attempt the audit yourself; the linter subagent must own it. Do NOT write
   #     The run-record write therefore must go through Bash. The directive
   #     prompt above instructs the agent to use `jq -n ... | tee <path>`
   #     because the headless permission engine does NOT match per-tool rules
-  #     like `Bash(jq:*)` against commands with `>` shell redirection (v1.0.1
-  #     empirical finding — `>` becomes a separate tool-input field that
-  #     defeats prefix matching). The pipe `|` is a documented command
+  #     like `Bash(jq:*)` against commands with `>` shell redirection — the
+  #     redirect operator becomes a separate tool-input field that defeats
+  #     prefix matching. The pipe `|` is a documented command
   #     separator, so each subcommand matches its own allow-rule cleanly.
   #     `Bash(tee:*)` below is what makes the recipe work end-to-end.
   #   - The CLI authoritative invariant check (status_before/after + HEAD
