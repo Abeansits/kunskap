@@ -1377,8 +1377,9 @@ Roles (P5 will enforce):
   WHY: the single-primary contract prevents write conflicts on shared
   vaults (one machine curates, one lints; everyone reads). Solo /
   single-machine users? Skip — defaults are fine.
-  HOW: \`kunskap whoami\` prints your slug; set roles.curator.primary
-  and roles.linter.primary in _meta/roles.toml, then
+  HOW: \`kunskap whoami\` prints your identity-string ("user@host");
+  paste it into roles.curator.primary and roles.linter.primary in
+  _meta/roles.toml, then
   \`git add _meta/roles.toml && git commit -m "roles: assign primaries" && git push\`
   so teammates pick it up.
 EOF
