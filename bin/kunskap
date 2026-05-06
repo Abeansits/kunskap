@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="1.1.1"
+VERSION="1.2.0"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/kunskap"
 IDENTITY_FILE="$CONFIG_DIR/identity.toml"
 
@@ -61,6 +61,7 @@ Usage:
   kunskap audit-coverage --vault <abs-path> [--format text|json]
   kunskap recall <query> [--vault <abs-path>] [--author <X>] [--tag <Y>] [--limit <N>] [--format text|json]
   kunskap sync   [--vault <abs-path>]
+  kunskap setup  --vault <path> [--name <slug> --host <host>] [--init] [--multiplayer] [--yes]
 
 Notes:
   --host is recommended on \`config user\`. Without it, host derives from
@@ -127,6 +128,14 @@ Notes:
   0 = at least one hit, 1 = no hits. Vault resolves from --vault, then the
   project marker (.claude/kunskap.json). Identity-independent — works on
   any machine regardless of role.
+
+  \`setup\` is the non-interactive composer for first-install onboarding —
+  it runs \`config user\` (if --name/--host given), \`init\` (if --init
+  given), sets curator + linter primaries (if --multiplayer given), and
+  \`learn enable\` against the current project, then prints \`learn status\`.
+  Driven by /kunskap:setup. Each step is composed from the existing CLI
+  verbs above; no logic is duplicated. \`--yes\` propagates to every
+  destructive step (Risk #7 — must be explicit, not default).
 EOF
 }
 
@@ -2211,6 +2220,185 @@ cmd_recall() {
   return 0
 }
 
+# Set roles.<role>.primary in <vault>/_meta/roles.toml. Idempotent:
+# overwrites any existing primary line within the [roles.<role>] section.
+# Errors if the section header isn't present (vault wasn't `kunskap init`'d
+# or roles.toml was hand-broken). Used by cmd_setup --multiplayer; kept
+# tightly scoped — full TOML mutation is out of v1.2's scope.
+set_role_primary() {
+  local vault="$1" role="$2" identity="$3"
+  local file="$vault/_meta/roles.toml"
+  [[ -f "$file" ]] || die "setup: roles.toml missing at $file (vault not kunskap-init'd?)"
+
+  local out
+  out="$(mktemp -t kunskap-roles.XXXXXX)"
+  if ! awk -v sec="[roles.$role]" -v ident="$identity" '
+    BEGIN { in_sec = 0; replaced = 0; saw_section = 0 }
+    $0 == sec { in_sec = 1; saw_section = 1; print; next }
+    /^\[/    { in_sec = 0; print; next }
+    in_sec && $1 == "primary" {
+      print "primary = \"" ident "\""
+      replaced = 1
+      next
+    }
+    { print }
+    END {
+      if (!saw_section) exit 2
+      if (!replaced)    exit 3
+      exit 0
+    }
+  ' "$file" > "$out"; then
+    local rc=$?
+    rm -f "$out"
+    if [[ $rc -eq 2 ]]; then
+      die "setup: [roles.$role] section missing in $file"
+    elif [[ $rc -eq 3 ]]; then
+      die "setup: no \`primary =\` line in [roles.$role] section of $file"
+    else
+      die "setup: failed to rewrite $file (awk rc=$rc)"
+    fi
+  fi
+  mv "$out" "$file"
+}
+
+cmd_setup() {
+  local name="" host="" vault="" do_init=false multiplayer=false yes=false extra=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --name)        require_value --name  "${2-__MISSING__}"; name="$2"; shift 2 ;;
+      --host)        require_value --host  "${2-__MISSING__}"; host="$2"; shift 2 ;;
+      --vault)       require_value --vault "${2-__MISSING__}"; vault="$2"; shift 2 ;;
+      --init)        do_init=true; shift ;;
+      --multiplayer) multiplayer=true; shift ;;
+      --yes|-y)      yes=true; shift ;;
+      *) extra+=("$1"); shift ;;
+    esac
+  done
+  [[ ${#extra[@]} -eq 0 ]] || die "setup: unknown extra args: ${extra[*]}"
+  [[ -n "$vault" ]] || die "setup: --vault <path> is required"
+
+  # name xor host: must set both or neither (Risk #5 — partial identity is
+  # the source of the silent role-check breakage; refuse the half-state).
+  if [[ -n "$name" && -z "$host" ]] || [[ -z "$name" && -n "$host" ]]; then
+    die "setup: --name and --host must be set together (got name='$name' host='$host')"
+  fi
+
+  # Resolve relative vault to absolute. Don't `cd` (init mode means the
+  # path may not exist yet); just prepend $PWD and warn so the user sees
+  # what the marker will record.
+  if [[ "$vault" != /* ]]; then
+    vault="$PWD/$vault"
+    echo "kunskap: setup: --vault was relative; resolved to $vault" >&2
+  fi
+
+  # --init / not-init validation: refuse to overwrite an existing vault on
+  # --init (use plain bind instead) and refuse to bind to a non-vault on
+  # plain mode (must pass --init to bootstrap).
+  if $do_init; then
+    if [[ -d "$vault" && -f "$vault/_meta/kunskap.toml" ]]; then
+      die "setup: --init given but $vault is already a kunskap vault (omit --init to bind to the existing vault)"
+    fi
+  else
+    [[ -e "$vault" ]]                    || die "setup: vault not found: $vault (pass --init to bootstrap)"
+    [[ -d "$vault" ]]                    || die "setup: vault path is not a directory: $vault"
+    [[ -f "$vault/_meta/kunskap.toml" ]] || die "setup: not a kunskap vault (missing _meta/kunskap.toml): $vault (pass --init to bootstrap)"
+  fi
+
+  # Step 1 — identity. Three branches keyed on --name presence + existing
+  # identity: write fresh, reuse existing, or refuse-if-mismatched.
+  local existing_identity=""
+  existing_identity="$(compute_identity_string 2>/dev/null || true)"
+  local identity=""
+
+  if [[ -n "$name" ]]; then
+    identity="$name@$host"
+    if [[ -n "$existing_identity" && "$existing_identity" != "$identity" ]]; then
+      if ! $yes && [[ "${KUNSKAP_AUTO_CONFIRM:-}" != "1" ]]; then
+        die "setup: identity already set to $existing_identity; --name/--host would overwrite to $identity (pass --yes to confirm, or omit --name/--host to keep existing)"
+      fi
+      echo "kunskap: setup: overwriting identity $existing_identity → $identity" >&2
+    fi
+    echo "kunskap: setup [1/4] writing identity $identity"
+    cmd_config_user --name "$name" --host "$host"
+  else
+    [[ -n "$existing_identity" ]] || die "setup: no identity set; pass --name <slug> --host <host>, or run \`kunskap config user\` first"
+    identity="$existing_identity"
+    echo "kunskap: setup [1/4] using existing identity $identity"
+  fi
+
+  # Step 2 — init the vault (only if --init).
+  if $do_init; then
+    echo "kunskap: setup [2/4] initializing vault at $vault"
+    local init_args=("$vault")
+    $yes && init_args+=(--yes)
+    cmd_init "${init_args[@]}"
+  else
+    echo "kunskap: setup [2/4] reusing existing vault at $vault"
+  fi
+
+  # Step 3 — multiplayer: set curator + linter primaries to caller's
+  # identity. Per design: "I'll set you as the primary on this machine.
+  # You can hand off later via \`kunskap config user\` + a roles.toml edit."
+  # Only fires when explicitly requested — solo vaults stay TBD (Q4).
+  if $multiplayer; then
+    echo "kunskap: setup [3/4] setting curator + linter primaries to $identity"
+    set_role_primary "$vault" curator "$identity"
+    set_role_primary "$vault" linter  "$identity"
+  else
+    echo "kunskap: setup [3/4] skipping multiplayer (roles stay TBD; solo-mode default)"
+  fi
+
+  # Commit shape depends on whether we just bootstrapped or are mutating
+  # an existing vault:
+  #   --init     : single baseline commit covering the full scaffold +
+  #                roles.toml mutation (so \`learn status\` reports a
+  #                clean inbox immediately).
+  #   plain bind : leave existing history alone; only commit roles.toml
+  #                if --multiplayer touched it.
+  # In both cases, push to origin only if shared = true AND a remote is
+  # configured (the "shared vault with no remote yet" edge case skips
+  # silently per Pass-1 review).
+  if [[ -d "$vault/.git" ]]; then
+    local commit_msg=""
+    if $do_init; then
+      git -C "$vault" add -A
+      commit_msg="kunskap: vault scaffold ($(if $multiplayer; then echo "multiplayer, primaries=$identity"; else echo "solo"; fi))"
+    elif $multiplayer; then
+      git -C "$vault" add _meta/roles.toml
+      commit_msg="roles: set curator + linter primaries to $identity (kunskap setup)"
+    fi
+    if [[ -n "$commit_msg" ]] && ! git -C "$vault" diff --cached --quiet; then
+      git -C "$vault" \
+        -c "user.email=$identity@kunskap.local" \
+        -c "user.name=$identity" \
+        commit -q -m "$commit_msg"
+      local shared_value=""
+      shared_value="$(read_toml_field "$vault/_meta/kunskap.toml" vault shared 2>/dev/null || true)"
+      if [[ "$shared_value" == "true" ]] && git -C "$vault" remote get-url origin >/dev/null 2>&1; then
+        if git -C "$vault" push -q 2>/dev/null; then
+          echo "kunskap: setup: pushed scaffold to origin" >&2
+        else
+          echo "kunskap: setup: scaffold committed locally; push failed (run \`git -C $vault push\` after fixing)" >&2
+        fi
+      fi
+    fi
+  fi
+
+  # Step 4 — bind the project to the vault (writes the marker + injects
+  # CLAUDE.md). The cwd is the project; cmd_learn_enable reads it via
+  # project_dir().
+  echo "kunskap: setup [4/4] enabling kunskap in $(project_dir)"
+  local enable_args=(--vault "$vault")
+  $yes && enable_args+=(--yes)
+  cmd_learn_enable "${enable_args[@]}"
+
+  # Final: print status verbatim so the user sees the same output as a
+  # plain \`kunskap learn status\` for verification.
+  echo
+  echo "kunskap: setup complete. Status:"
+  cmd_learn_status
+}
+
 main() {
   # Pre-dispatch globals are consumed only when they precede the first
   # non-flag token; subcommand-local `--vault` (curate, learn enable) is
@@ -2237,6 +2425,7 @@ main() {
     audit-coverage)           cmd_audit_coverage "$@" ;;
     recall)                   cmd_recall "$@" ;;
     sync)                     cmd_sync "$@" ;;
+    setup)                    cmd_setup "$@" ;;
     *) die "unknown subcommand: $cmd (try \`kunskap help\`)" ;;
   esac
 }

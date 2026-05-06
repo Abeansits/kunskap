@@ -449,6 +449,12 @@ jobs:
       - name: bats — recall CLI (P6)
         run: bats tests/contract/recall-cli.bats
 
+      - name: bats — setup CLI surface (v1.2)
+        run: bats tests/contract/setup-cli.bats
+
+      - name: bats — setup slash command shape (v1.2)
+        run: bats tests/contract/setup-slash.bats
+
       # ---------- end-to-end flows ----------
 
       - name: e2e — init produces a curator-runnable, drafts-queryable vault (P3)
@@ -529,6 +535,33 @@ jobs:
           if ./bin/kunskap recall "absolutely-nonexistent-zzzz" --vault "$tmp" >/dev/null 2>&1; then
             echo "expected exit 1 on no-hit query"; exit 1
           fi
+
+      - name: e2e — setup --init --multiplayer onboards in one command (v1.2)
+        run: |
+          # Hard contract for v1.2: a single `kunskap setup` call from a
+          # fresh project + fresh XDG must end with identity written, vault
+          # initialized, both role primaries set, project marker written,
+          # CLAUDE.md managed block injected, and a clean inbox.
+          tmp_proj="$(mktemp -d)/proj"
+          tmp_xdg="$(mktemp -d)"
+          tmp_vault="$(mktemp -d)/vault"
+          mkdir -p "$tmp_proj"
+          ( cd "$tmp_proj" && \
+            XDG_CONFIG_HOME="$tmp_xdg" "$GITHUB_WORKSPACE/bin/kunskap" setup \
+              --name vigil --host runner \
+              --vault "$tmp_vault" \
+              --init --multiplayer --yes )
+          # Identity + vault + roles.
+          grep -Fxq 'name  = "vigil"'  "$tmp_xdg/kunskap/identity.toml"
+          grep -Fxq 'host  = "runner"' "$tmp_xdg/kunskap/identity.toml"
+          test -f "$tmp_vault/_meta/kunskap.toml"
+          [[ "$(grep -c '^primary = "vigil@runner"$' "$tmp_vault/_meta/roles.toml")" -eq 2 ]]
+          # Single baseline commit, clean working tree.
+          [[ "$(git -C "$tmp_vault" log --oneline | wc -l | tr -d ' ')" -eq 1 ]]
+          [[ -z "$(git -C "$tmp_vault" status --porcelain --untracked-files=all)" ]]
+          # Project marker + CLAUDE.md.
+          test -f "$tmp_proj/.claude/kunskap.json"
+          grep -Fq '<!-- BEGIN kunskap (managed) -->' "$tmp_proj/CLAUDE.md"
 
       # ---------- drift lints (P1 §7, P2 §8, P3 §8, P4 §9) ----------
 
