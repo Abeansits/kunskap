@@ -2262,7 +2262,7 @@ set_role_primary() {
 }
 
 cmd_setup() {
-  local name="" host="" vault="" do_init=false multiplayer=false yes=false extra=()
+  local name="" host="" vault="" do_init=false multiplayer=false yes=false
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --name)        require_value --name  "${2-__MISSING__}"; name="$2"; shift 2 ;;
@@ -2271,29 +2271,22 @@ cmd_setup() {
       --init)        do_init=true; shift ;;
       --multiplayer) multiplayer=true; shift ;;
       --yes|-y)      yes=true; shift ;;
-      *) extra+=("$1"); shift ;;
+      *) die "setup: unknown extra args: $1" ;;
     esac
   done
-  [[ ${#extra[@]} -eq 0 ]] || die "setup: unknown extra args: ${extra[*]}"
   [[ -n "$vault" ]] || die "setup: --vault <path> is required"
 
-  # name xor host: must set both or neither (Risk #5 — partial identity is
-  # the source of the silent role-check breakage; refuse the half-state).
+  # Risk #5 — partial identity silently breaks role checks; refuse the half-state.
   if [[ -n "$name" && -z "$host" ]] || [[ -z "$name" && -n "$host" ]]; then
     die "setup: --name and --host must be set together (got name='$name' host='$host')"
   fi
 
-  # Resolve relative vault to absolute. Don't `cd` (init mode means the
-  # path may not exist yet); just prepend $PWD and warn so the user sees
-  # what the marker will record.
+  # Don't `cd` to canonicalize — --init mode means the path may not exist yet.
   if [[ "$vault" != /* ]]; then
     vault="$PWD/$vault"
     echo "kunskap: setup: --vault was relative; resolved to $vault" >&2
   fi
 
-  # --init / not-init validation: refuse to overwrite an existing vault on
-  # --init (use plain bind instead) and refuse to bind to a non-vault on
-  # plain mode (must pass --init to bootstrap).
   if $do_init; then
     if [[ -d "$vault" && -f "$vault/_meta/kunskap.toml" ]]; then
       die "setup: --init given but $vault is already a kunskap vault (omit --init to bind to the existing vault)"
@@ -2304,8 +2297,6 @@ cmd_setup() {
     [[ -f "$vault/_meta/kunskap.toml" ]] || die "setup: not a kunskap vault (missing _meta/kunskap.toml): $vault (pass --init to bootstrap)"
   fi
 
-  # Step 1 — identity. Three branches keyed on --name presence + existing
-  # identity: write fresh, reuse existing, or refuse-if-mismatched.
   local existing_identity=""
   existing_identity="$(compute_identity_string 2>/dev/null || true)"
   local identity=""
@@ -2326,7 +2317,6 @@ cmd_setup() {
     echo "kunskap: setup [1/4] using existing identity $identity"
   fi
 
-  # Step 2 — init the vault (only if --init).
   if $do_init; then
     echo "kunskap: setup [2/4] initializing vault at $vault"
     local init_args=("$vault")
@@ -2336,10 +2326,6 @@ cmd_setup() {
     echo "kunskap: setup [2/4] reusing existing vault at $vault"
   fi
 
-  # Step 3 — multiplayer: set curator + linter primaries to caller's
-  # identity. Per design: "I'll set you as the primary on this machine.
-  # You can hand off later via \`kunskap config user\` + a roles.toml edit."
-  # Only fires when explicitly requested — solo vaults stay TBD (Q4).
   if $multiplayer; then
     echo "kunskap: setup [3/4] setting curator + linter primaries to $identity"
     set_role_primary "$vault" curator "$identity"
@@ -2348,16 +2334,11 @@ cmd_setup() {
     echo "kunskap: setup [3/4] skipping multiplayer (roles stay TBD; solo-mode default)"
   fi
 
-  # Commit shape depends on whether we just bootstrapped or are mutating
-  # an existing vault:
-  #   --init     : single baseline commit covering the full scaffold +
-  #                roles.toml mutation (so \`learn status\` reports a
-  #                clean inbox immediately).
-  #   plain bind : leave existing history alone; only commit roles.toml
-  #                if --multiplayer touched it.
-  # In both cases, push to origin only if shared = true AND a remote is
-  # configured (the "shared vault with no remote yet" edge case skips
-  # silently per Pass-1 review).
+  # Commit shape splits on bootstrap vs. existing-vault: --init batches the
+  # entire scaffold (incl. multiplayer roles.toml) into a single baseline
+  # commit so \`learn status\` reports INBOX: 0 immediately. Plain bind
+  # commits only the roles.toml mutation, leaving the user's history alone.
+  # Push is best-effort; the no-remote-yet case is silent per Pass-1 review.
   if [[ -d "$vault/.git" ]]; then
     local commit_msg=""
     if $do_init; then
@@ -2384,16 +2365,12 @@ cmd_setup() {
     fi
   fi
 
-  # Step 4 — bind the project to the vault (writes the marker + injects
-  # CLAUDE.md). The cwd is the project; cmd_learn_enable reads it via
-  # project_dir().
+  # cwd must be the project — cmd_learn_enable reads it via project_dir().
   echo "kunskap: setup [4/4] enabling kunskap in $(project_dir)"
   local enable_args=(--vault "$vault")
   $yes && enable_args+=(--yes)
   cmd_learn_enable "${enable_args[@]}"
 
-  # Final: print status verbatim so the user sees the same output as a
-  # plain \`kunskap learn status\` for verification.
   echo
   echo "kunskap: setup complete. Status:"
   cmd_learn_status

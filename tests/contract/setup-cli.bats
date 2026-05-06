@@ -150,8 +150,7 @@ teardown() {
   cd "$TMPPROJ"
   # Pre-seed: identity + a kunskap-init'd vault.
   write_identity_toml "$TMPXDG" "existing" "machine"
-  KUNSKAP_AUTO_CONFIRM=1 "$KUNSKAP_BIN" init "$TMPVAULT" --name "Pre-seeded" >/dev/null
-  ( cd "$TMPVAULT" && git add . && git -c user.email=t@x -c user.name=t commit -q -m seed )
+  TMPVAULT="$(make_empty_init_vault)"
 
   run "$KUNSKAP_BIN" setup --vault "$TMPVAULT" --yes
   [[ "$status" -eq 0 ]]
@@ -168,8 +167,7 @@ teardown() {
 @test "setup re-run on an already-enabled project is idempotent" {
   cd "$TMPPROJ"
   write_identity_toml "$TMPXDG" "existing" "machine"
-  KUNSKAP_AUTO_CONFIRM=1 "$KUNSKAP_BIN" init "$TMPVAULT" --name "Pre-seeded" >/dev/null
-  ( cd "$TMPVAULT" && git add . && git -c user.email=t@x -c user.name=t commit -q -m seed )
+  TMPVAULT="$(make_empty_init_vault)"
 
   "$KUNSKAP_BIN" setup --vault "$TMPVAULT" --yes >/dev/null
   marker_first="$(cat "$TMPPROJ/.claude/kunskap.json")"
@@ -205,8 +203,7 @@ teardown() {
 @test "setup --yes confirms identity overwrite and proceeds" {
   cd "$TMPPROJ"
   write_identity_toml "$TMPXDG" "old" "host1"
-  KUNSKAP_AUTO_CONFIRM=1 "$KUNSKAP_BIN" init "$TMPVAULT" --name "Pre" >/dev/null
-  ( cd "$TMPVAULT" && git add . && git -c user.email=t@x -c user.name=t commit -q -m seed )
+  TMPVAULT="$(make_empty_init_vault)"
   run "$KUNSKAP_BIN" setup --name new --host host2 --vault "$TMPVAULT" --yes
   [[ "$status" -eq 0 ]]
   grep -Fxq 'name  = "new"'   "$TMPXDG/kunskap/identity.toml"
@@ -218,8 +215,7 @@ teardown() {
 @test "setup --multiplayer on existing vault commits a roles-only change" {
   cd "$TMPPROJ"
   write_identity_toml "$TMPXDG" "vigil" "laptop"
-  KUNSKAP_AUTO_CONFIRM=1 "$KUNSKAP_BIN" init "$TMPVAULT" --name "Pre" >/dev/null
-  ( cd "$TMPVAULT" && git add . && git -c user.email=t@x -c user.name=t commit -q -m seed )
+  TMPVAULT="$(make_empty_init_vault)"
 
   run "$KUNSKAP_BIN" setup --vault "$TMPVAULT" --multiplayer --yes
   [[ "$status" -eq 0 ]]
@@ -272,8 +268,7 @@ EOF
 @test "setup without --yes propagates the Risk #7 prompt to learn enable" {
   cd "$TMPPROJ"
   write_identity_toml "$TMPXDG" "vigil" "laptop"
-  KUNSKAP_AUTO_CONFIRM=1 "$KUNSKAP_BIN" init "$TMPVAULT" --name "Pre" >/dev/null
-  ( cd "$TMPVAULT" && git add . && git -c user.email=t@x -c user.name=t commit -q -m seed )
+  TMPVAULT="$(make_empty_init_vault)"
   # No --yes, no KUNSKAP_AUTO_CONFIRM, /dev/null on stdin → cmd_learn_enable
   # should refuse rather than auto-confirming.
   run bash -c "'$KUNSKAP_BIN' setup --vault '$TMPVAULT' </dev/null"
@@ -286,8 +281,7 @@ EOF
 @test "setup honours KUNSKAP_AUTO_CONFIRM=1 in lieu of --yes" {
   cd "$TMPPROJ"
   write_identity_toml "$TMPXDG" "vigil" "laptop"
-  KUNSKAP_AUTO_CONFIRM=1 "$KUNSKAP_BIN" init "$TMPVAULT" --name "Pre" >/dev/null
-  ( cd "$TMPVAULT" && git add . && git -c user.email=t@x -c user.name=t commit -q -m seed )
+  TMPVAULT="$(make_empty_init_vault)"
   run bash -c "KUNSKAP_AUTO_CONFIRM=1 '$KUNSKAP_BIN' setup --vault '$TMPVAULT' </dev/null"
   [[ "$status" -eq 0 ]]
   [[ -f "$TMPPROJ/.claude/kunskap.json" ]]
