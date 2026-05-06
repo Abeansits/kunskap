@@ -57,7 +57,7 @@ jobs:
               || { echo "${ev} command does not reference \${CLAUDE_PLUGIN_ROOT}: $cmd"; exit 1; }
           done
 
-      - name: PostToolUse hook is configured async (v1.1: never block the agentic loop)
+      - name: "PostToolUse hook is configured async (v1.1 — never block the agentic loop)"
         run: jq -e '.hooks.PostToolUse[0].hooks[0].async == true' hooks/hooks.json
 
       - name: PostToolUse matcher is Write|Edit (only file-write tools)
