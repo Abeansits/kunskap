@@ -179,7 +179,11 @@ shared = true
 EOF
   (
     cd "$vault"
-    git init -q
+    # -b main is explicit: sync-cli.bats and post-write-sync.bats push HEAD:main
+    # to the bare remote then expect kunskap sync's plain `git push` to track
+    # it. Without this, Linux CI's git defaults to `master` while the remote
+    # ref is `main`, and push.default=simple refuses the divergent names.
+    git init -q -b main
     git config user.email smoke@bats
     git config user.name  smoke
     [[ -n "$remote" ]] && git remote add origin "$remote" || true
@@ -199,7 +203,7 @@ shared = false
 EOF
   (
     cd "$vault"
-    git init -q
+    git init -q -b main
     git config user.email smoke@bats
     git config user.name  smoke
     git add .
@@ -207,5 +211,7 @@ EOF
   )
 }
 
-# Bare repo for tests asserting push lands.
-make_bare_remote() { git init -q --bare "$1"; }
+# Bare repo for tests asserting push lands. -b main matches the vault helpers
+# above — ensures HEAD on the bare points at refs/heads/main so post-push
+# verification via `git log` (which reads HEAD) sees the synced commits.
+make_bare_remote() { git init -q --bare -b main "$1"; }
