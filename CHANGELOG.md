@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.2.1 — 2026-05-07 — wire orphan bats files into CI
+
+- **Coverage gap closed.** Four bats files added in v1.1.0 — `sync-cli.bats`, `post-write-sync.bats`, `learn-enable-claudemd.bats`, `launch-footer-template.bats` — were never referenced from any `pN.yml` and slipped through v1.1.1's CI consolidation. Local `bats tests/contract/` ran them; CI didn't. Now wired into `ci.yml` (paired by feature: sync CLI + post-write-sync hook, then learn-enable + LAUNCH_FOOTER template — placed between the P6 recall step and the v1.2 setup steps). Local and CI suite counts now match; the previously-ungated 45-case coverage gap is closed. Pure CI hygiene — no behavioral changes to `bin/kunskap`, hooks, slash commands, or templates.
+- `bin/kunskap version` bumps to `1.2.1`. Plugin manifest version bumps to `1.2.1`.
+
 ## v1.2.0 — 2026-05-06 — `/kunskap:setup` guided onboarding
 
 - **`/kunskap:setup` slash command + `bin/kunskap setup` CLI verb.** Collapses what was 5–8 commands across CLI + slash + manual `_meta/roles.toml` editing into one short conversation. The slash command asks 3 questions (identity, vault path, solo-or-multiplayer), shows what it'll run, then composes the four underlying primitives — `kunskap config user`, `kunskap init`, the multiplayer `_meta/roles.toml` edit, and `kunskap learn enable` — in one go. End state: identity written, vault initialized, project marker in `.claude/kunskap.json`, capture + recall conventions injected into `CLAUDE.md`. Closes the v1.0.0 first-install friction (rank-2 real-usage finding from the post-v1.0 retro): the first end-to-end install took ~30 minutes and required deriving the per-project marker model from observed file presence; this PR's empirical smoke gets it under five.
