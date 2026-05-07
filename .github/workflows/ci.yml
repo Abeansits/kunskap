@@ -449,6 +449,18 @@ jobs:
       - name: bats — recall CLI (P6)
         run: bats tests/contract/recall-cli.bats
 
+      - name: bats — sync CLI surface (v1.1)
+        run: bats tests/contract/sync-cli.bats
+
+      - name: bats — post-write-sync hook fail-soft (v1.1)
+        run: bats tests/contract/post-write-sync.bats
+
+      - name: bats — learn enable / disable CLAUDE.md inject (v1.1)
+        run: bats tests/contract/learn-enable-claudemd.bats
+
+      - name: bats — LAUNCH_FOOTER template shape (v1.1)
+        run: bats tests/contract/launch-footer-template.bats
+
       - name: bats — setup CLI surface (v1.2)
         run: bats tests/contract/setup-cli.bats
 

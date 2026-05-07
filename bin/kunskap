@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="1.2.0"
+VERSION="1.2.1"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/kunskap"
 IDENTITY_FILE="$CONFIG_DIR/identity.toml"
 
