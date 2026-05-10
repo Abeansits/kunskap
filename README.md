@@ -26,6 +26,7 @@ Useful findings — gotchas, design decisions, "this is how X really works" — 
 ```
 /plugin marketplace add Abeansits/kunskap
 /plugin install kunskap@kunskap
+/plugin reload-plugins
 ```
 
 Then run guided onboarding from any project:
