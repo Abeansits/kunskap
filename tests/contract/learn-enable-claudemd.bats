@@ -53,11 +53,14 @@ EOF
   grep -Fq '/kunskap:recall' "$(claudemd)"
 }
 
-@test "learn enable injects the Recall addendum after the LAUNCH_FOOTER body" {
+@test "learn enable injects the recall guidance exactly once (no duplicate Recall section)" {
   cd "$TMPPROJ"
   KUNSKAP_AUTO_CONFIRM=1 "$KUNSKAP_BIN" learn enable --vault "$vault"
-  grep -Fq '## Recall' "$(claudemd)"
-  grep -Fq 'your first action is to run `/kunskap:recall' "$(claudemd)"
+  # Recall guidance lives in LAUNCH_FOOTER's Pre-flight section only;
+  # v1.2.3 dropped the duplicate `## Recall` heredoc that paraphrased it.
+  count=$(grep -Fc 'your first action is to run `/kunskap:recall' "$(claudemd)")
+  [[ "$count" -eq 1 ]]
+  ! grep -Fxq '## Recall' "$(claudemd)"
 }
 
 @test "learn enable is idempotent — re-enable doesn't duplicate the block" {

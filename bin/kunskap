@@ -414,19 +414,13 @@ sha256_hex() {
 }
 
 # Render the body that gets injected between BEGIN/END markers (after the
-# hash line). Concatenates templates/LAUNCH_FOOTER.md and the Recall
-# addendum. Hashed for tamper detection at disable time.
+# hash line). Hashed for tamper detection at disable time. The recall
+# guidance lives once, in templates/LAUNCH_FOOTER.md's Pre-flight section.
 render_claudemd_body() {
   local template
   template="$(plugin_root)/templates/LAUNCH_FOOTER.md"
   [[ -f "$template" ]] || die "learn enable: missing $template (plugin install incomplete?)"
   cat "$template"
-  cat <<'EOF'
-
-## Recall
-
-At task start (before writing code or making a plan), your first action is to run `/kunskap:recall <keywords>` against the goal — pick 2–3 keywords from the user's request — and briefly note the top 1–3 relevant hits before proceeding. If nothing relevant comes back, say "recall: no prior art" and proceed. Skip only when the task is trivial (greetings, time queries, single-line tweaks).
-EOF
 }
 
 # Echo a path to a temp file containing the full managed block (BEGIN +
