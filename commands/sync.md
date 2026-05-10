@@ -14,4 +14,4 @@ Notes:
 - Solo vaults (`shared = false` in `_meta/kunskap.toml`) print a "not shared" message and exit 0; they never push.
 - Identity must be set (`kunskap config user --name <slug> --host <host>`) — otherwise refuses with an actionable message.
 - Rebase-in-progress at `<vault>/.git/rebase-merge` or `rebase-apply` refuses with an actionable hint (`git -C <vault> rebase --continue` or `--abort`).
-- Exit codes: 0 = synced or nothing to sync (clean inbox), 1 = push failed (commit landed locally; will retry on next sync) or other refusal. Unlike the silent async hook, this surface reports errors clearly.
+- Exit codes: 0 = synced or nothing to sync (clean inbox), 1 = push failed (commit landed locally; will retry on next sync) or other refusal. The async hook only surfaces stderr (commit/push failures, rebase-in-progress, solo no-op); this verb returns a non-zero exit code so callers can branch on it.
