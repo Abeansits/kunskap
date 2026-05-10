@@ -467,6 +467,9 @@ jobs:
       - name: bats — setup slash command shape (v1.2)
         run: bats tests/contract/setup-slash.bats
 
+      - name: bats — panel-content e2e smoke (v1.2.2)
+        run: bats tests/contract/panel-content.bats
+
       # ---------- end-to-end flows ----------
 
       - name: e2e — init produces a curator-runnable, drafts-queryable vault (P3)
