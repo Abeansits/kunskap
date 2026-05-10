@@ -47,3 +47,15 @@ TEMPLATE="$REPO_ROOT/templates/LAUNCH_FOOTER.md"
   # newline would put the END marker on the same line as the last body line.
   [[ -z "$(tail -c1 "$TEMPLATE")" ]]
 }
+
+@test "LAUNCH_FOOTER source-field guidance distinguishes shared vs solo vaults (v1.2.3)" {
+  # Sebastian 2026-05-10: thread paths only resolve on the writer's machine,
+  # so shared vaults must lead with team-resolvable refs (PR / branch /
+  # issue URL). Lock this contract in so no future doc sweep collapses
+  # back to the old "thread > PR > branch" priority.
+  grep -Fiq 'shared vaults' "$TEMPLATE"
+  grep -Fiq 'solo vaults' "$TEMPLATE"
+  # PR must appear in the shared-vault list as the lead option; if this
+  # changes the source-field guidance probably regressed.
+  grep -Fq 'pr: https://github.com/' "$TEMPLATE"
+}
