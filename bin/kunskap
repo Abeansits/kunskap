@@ -287,12 +287,13 @@ require_value() {
 }
 
 cmd_config_user() {
-  local name="" email="" host=""
+  local name="" email="" host="" yes=false
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --name)  require_value --name  "${2-__MISSING__}"; name="$2";  shift 2 ;;
       --email) require_value --email "${2-__MISSING__}"; email="$2"; shift 2 ;;
       --host)  require_value --host  "${2-__MISSING__}"; host="$2";  shift 2 ;;
+      --yes|-y) yes=true; shift ;;
       *) die "unknown flag for \`config user\`: $1" ;;
     esac
   done
@@ -305,6 +306,24 @@ cmd_config_user() {
   if [[ -z "$host" ]]; then
     host="$(hostname -s)"
     echo "kunskap: host derived from \`hostname -s\` ($host); explicit --host recommended for stable role-checks (see Risk #5)." >&2
+  fi
+
+  # v1.2.3: refuse to silently overwrite an existing different identity.
+  # Sebastian's 2026-05-10 fresh-install walkthrough surfaced this: the
+  # v1.1 smoke harness ran `kunskap config user --name smoke --host runner`
+  # without isolating XDG, planting `smoke@runner` in the user's real
+  # ~/.config/kunskap/identity.toml — invisible until the next /kunskap:setup
+  # picked it up days later as a "phantom identity". Match cmd_setup's
+  # Risk #7 pattern: die without --yes / KUNSKAP_AUTO_CONFIRM=1 when the
+  # write would replace a different existing identity.
+  local existing_identity=""
+  existing_identity="$(compute_identity_string 2>/dev/null || true)"
+  local new_identity="$name@$host"
+  if [[ -n "$existing_identity" && "$existing_identity" != "$new_identity" ]]; then
+    if ! $yes && [[ "${KUNSKAP_AUTO_CONFIRM:-}" != "1" ]]; then
+      die "config user: identity already set to $existing_identity; --name/--host would overwrite to $new_identity (pass --yes to confirm)"
+    fi
+    echo "kunskap: config user: replacing identity $existing_identity → $new_identity" >&2
   fi
 
   write_identity "$name" "$email" "$host"
@@ -2332,7 +2351,9 @@ cmd_setup() {
       echo "kunskap: setup: overwriting identity $existing_identity → $identity" >&2
     fi
     echo "kunskap: setup [1/4] writing identity $identity"
-    cmd_config_user --name "$name" --host "$host"
+    # cmd_setup has already enforced its own override check above; pass --yes
+    # so cmd_config_user (v1.2.3 override guard) doesn't double-prompt.
+    cmd_config_user --name "$name" --host "$host" --yes
   else
     [[ -n "$existing_identity" ]] || die "setup: no identity set; pass --name <slug> --host <host>, or run \`kunskap config user\` first"
     identity="$existing_identity"

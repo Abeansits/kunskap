@@ -106,3 +106,55 @@ EOF
   [[ "$status" -ne 0 ]]
   [[ "$output" == *"exactly one"* ]]
 }
+
+# ---------- v1.2.3 identity-overwrite guard ----------
+
+@test "config user writes silently when no existing identity (first-run path)" {
+  # No identity.toml on a fresh XDG → no override prompt fires.
+  run "$KUNSKAP_BIN" config user --name first --host runner
+  [[ "$status" -eq 0 ]]
+  [[ "$output" == *"identity written"* ]]
+  run "$KUNSKAP_BIN" whoami
+  [[ "$status" -eq 0 ]]
+  [[ "$output" == "first@runner" ]]
+}
+
+@test "config user writes silently when existing identity matches the new one" {
+  "$KUNSKAP_BIN" config user --name same --host runner >/dev/null
+  # Re-running with the SAME identity is a no-op semantically — must not
+  # require --yes (else CI / setup re-runs would be needlessly noisy).
+  run "$KUNSKAP_BIN" config user --name same --host runner
+  [[ "$status" -eq 0 ]]
+  [[ "$output" != *"replacing identity"* ]]
+}
+
+@test "config user refuses to overwrite an existing different identity without --yes" {
+  # Sebastian 2026-05-10: this guard would have prevented the v1.1 smoke
+  # from silently planting `smoke@runner` in ~/.config/kunskap/identity.toml
+  # (smoke ran without isolating XDG_CONFIG_HOME).
+  "$KUNSKAP_BIN" config user --name old --host runner >/dev/null
+  run "$KUNSKAP_BIN" config user --name new --host runner
+  [[ "$status" -ne 0 ]]
+  [[ "$output" == *"identity already set to old@runner"* ]]
+  [[ "$output" == *"--yes to confirm"* ]]
+  # Identity on disk is unchanged.
+  run "$KUNSKAP_BIN" whoami
+  [[ "$output" == "old@runner" ]]
+}
+
+@test "config user --yes overwrites the existing identity and prints replacement" {
+  "$KUNSKAP_BIN" config user --name old --host runner >/dev/null
+  run "$KUNSKAP_BIN" config user --name new --host runner --yes
+  [[ "$status" -eq 0 ]]
+  [[ "$output" == *"replacing identity old@runner → new@runner"* ]]
+  run "$KUNSKAP_BIN" whoami
+  [[ "$output" == "new@runner" ]]
+}
+
+@test "config user honors KUNSKAP_AUTO_CONFIRM=1 (matches Risk #7 pattern)" {
+  "$KUNSKAP_BIN" config user --name old --host runner >/dev/null
+  KUNSKAP_AUTO_CONFIRM=1 run "$KUNSKAP_BIN" config user --name new --host runner
+  [[ "$status" -eq 0 ]]
+  run "$KUNSKAP_BIN" whoami
+  [[ "$output" == "new@runner" ]]
+}
