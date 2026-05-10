@@ -123,8 +123,19 @@ End with three concrete next-action suggestions. Tailor to what you just did:
    - Drop a learning to <vault>/raw/inbox/learning-<slug>-<YYYY-MM-DD>.md
      (the LAUNCH_FOOTER conventions are in your CLAUDE.md — see the managed block)
    - Search prior art: /kunskap:recall <query>
-   - Manually flush captures: /kunskap:sync
+   - <if vault is shared (`shared = true`)>:
+       Captures auto-sync via the PostToolUse hook. /kunskap:sync is
+       the manual fallback when the hook is wedged.
+   - <if vault is solo (`shared = false`)>:
+       The hook leaves captures uncommitted (Risk #8 — solo vaults never
+       auto-commit or push). Commit yourself with:
+         cd <vault> && git add raw/inbox && git commit
+       /kunskap:sync will tell you the same thing if you run it. Flip
+       `shared = true` in <vault>/_meta/kunskap.toml when you're ready
+       for auto-sync.
 ```
+
+Tailor the bullets to the vault's `shared` flag — read it from `<vault>/_meta/kunskap.toml` (`grep -E '^shared' <vault>/_meta/kunskap.toml`) and pick the matching branch. Don't print both.
 
 # Conversation principles (apply throughout)
 

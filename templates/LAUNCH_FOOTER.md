@@ -23,7 +23,12 @@ Fallback if the slash command is unavailable: `grep -ri <keyword> <vault>/wiki/`
 
 Before declaring the task done, write a learning or idea file to the inbox.
 
-**Write a new file** to `<vault>/raw/inbox/` named `{type}-{short-slug}-{date}.md` where type is `learning`, `idea`, or `improvement`. The PostToolUse hook will commit + push it asynchronously.
+**Write a new file** to `<vault>/raw/inbox/` named `{type}-{short-slug}-{date}.md` where type is `learning`, `idea`, or `improvement`.
+
+What happens after the write depends on the vault's `shared` flag in `_meta/kunskap.toml`:
+
+- **Shared vault** (`shared = true`): the PostToolUse hook commits + pushes the inbox write asynchronously. `/kunskap:sync` (or `kunskap sync`) is the manual fallback when the hook is wedged or you want explicit confirmation.
+- **Solo vault** (`shared = false`): the hook leaves the capture uncommitted in your working tree by design (Risk #8 — solo vaults never auto-commit or push). The hook prints a one-line stderr signal so you know it fired and decided to no-op. Commit yourself (`cd <vault> && git add raw/inbox && git commit`) when you want to. Flip `shared = true` in `_meta/kunskap.toml` to enable auto-sync.
 
 ### Source field — priority order
 
