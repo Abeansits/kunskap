@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
+  "name": "kunskap",
+  "description": "Marketplace for the Kunskap plugin — knowledge-base for Claude Code sessions.",
+  "owner": {
+    "name": "Sebastian Nystrom"
+  },
+  "plugins": [
+    {
+      "name": "kunskap",
+      "description": "Knowledge-base plugin for Claude Code. Curate session learnings into an Obsidian-style wiki shared across machines and humans. (Vigil/Sigil/Ting/Kunskap family.)",
+      "source": {
+        "source": "github",
+        "repo": "Abeansits/kunskap"
+      },
+      "homepage": "https://github.com/Abeansits/kunskap",
+      "repository": "https://github.com/Abeansits/kunskap",
+      "license": "MIT",
+      "keywords": [
+        "knowledge-base",
+        "obsidian",
+        "vault",
+        "curation"
+      ]
+    }
+  ]
+}

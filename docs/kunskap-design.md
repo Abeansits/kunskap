@@ -368,8 +368,8 @@ The `marketplace.json` content lists the kunskap plugin and its source repo. See
     `kunskap init ~/Projects/kunskap-research --shared git@github.com:Abeansits/kunskap-research.git`
 
 ## Install
-    /plugin marketplace add Abeansits/kunskap-marketplace
-    /plugin install kunskap@kunskap-marketplace
+    /plugin marketplace add Abeansits/kunskap
+    /plugin install kunskap@kunskap
 
 ## Configure your identity (one-time, per machine)
     kunskap config user --name charlie --email charlie@example.com --host desktop
