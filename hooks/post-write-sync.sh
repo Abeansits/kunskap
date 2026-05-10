@@ -67,7 +67,14 @@ esac
 # Past the cheap filter — now we can afford the helper subprocesses.
 who="$(kunskap_identity_set)" || exit 0
 vault="$(kunskap_resolve_vault)" || exit 0
-kunskap_is_shared "$vault" || exit 0
+
+# Surface the solo no-op so users can distinguish "hook fired, decided
+# to no-op (Risk #8 — solo vaults never auto-commit or push)" from
+# "hook never fired."
+if ! kunskap_is_shared "$vault"; then
+  echo "Kunskap: post-write-sync — vault is solo (shared = false in $vault/_meta/kunskap.toml); inbox capture left uncommitted. Flip shared = true and commit _meta/kunskap.toml when you're ready to enable auto-sync." >&2
+  exit 0
+fi
 
 if kunskap_rebase_in_progress "$vault"; then
   echo "Kunskap: post-write-sync skipped — rebase in progress at $vault" >&2

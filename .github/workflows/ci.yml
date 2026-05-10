@@ -89,6 +89,11 @@ jobs:
 
       - name: config user without --host emits Risk #5 warning
         run: |
+          # Isolated XDG so the prior step's `ci@runner` identity doesn't
+          # collide with the v1.2.3 override guard — without --host the
+          # CLI derives host from `hostname -s` (e.g. fv-az…), which
+          # differs from `runner` and would trigger the override refuse.
+          export XDG_CONFIG_HOME="$(mktemp -d)"
           stderr=$(./bin/kunskap config user --name ci 2>&1 >/dev/null)
           echo "$stderr" | grep -q "explicit --host recommended" \
             || { echo "expected Risk #5 warning; got: $stderr"; exit 1; }

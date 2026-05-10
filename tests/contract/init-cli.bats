@@ -150,9 +150,11 @@ teardown() {
 
 @test "init seeds neutral sample inbox + wiki + archive notes" {
   "$KUNSKAP_BIN" init "$TMPTARGET"
-  # Use the literal "example" prefix — neutral, no domain leak (Risk #7).
-  inbox_count=$(find "$TMPTARGET/raw/inbox" -name 'example-*.md' | wc -l | tr -d ' ')
-  [[ "$inbox_count" -ge 1 ]]
+  # Inbox example is a dotfile so curator/linter/recall skip it (they
+  # all glob `*.md`); it stays on disk as a format reference.
+  [[ -f "$TMPTARGET/raw/inbox/.example.md" ]]
+  inbox_visible=$(find "$TMPTARGET/raw/inbox" -name 'example-*.md' | wc -l | tr -d ' ')
+  [[ "$inbox_visible" -eq 0 ]]
   wiki_count=$(find "$TMPTARGET/wiki/learnings" -name 'example-topic.md' | wc -l | tr -d ' ')
   [[ "$wiki_count" -eq 1 ]]
   archive_count=$(find "$TMPTARGET/Archives/processed-inbox" -name 'example-baseline-*.md' | wc -l | tr -d ' ')
@@ -160,6 +162,20 @@ teardown() {
   # Sample article body must NOT mention specific research domains (e.g.
   # hyperspectral). Reject the leak class explicitly.
   ! grep -qi 'hyperspectral\|kunskap-research' "$TMPTARGET/wiki/learnings/example-topic.md"
+}
+
+@test "init's inbox example is invisible to curator/linter/audit-coverage *.md globs" {
+  "$KUNSKAP_BIN" init "$TMPTARGET"
+  # Bash glob (curator/linter agents use this — `ls raw/inbox/*.md`).
+  shopt -s nullglob
+  matches=( "$TMPTARGET"/raw/inbox/*.md )
+  shopt -u nullglob
+  [[ ${#matches[@]} -eq 0 ]]
+  # find with explicit dotfile exclusion (audit-coverage uses this so
+  # BSD find / macOS — which would otherwise match `.example.md` against
+  # `*.md` (POSIX fnmatch w/o FNM_PERIOD) — behaves the same as bash.
+  found=$(find "$TMPTARGET/raw/inbox" -type f -name '*.md' -not -name '.*' | wc -l | tr -d ' ')
+  [[ "$found" -eq 0 ]]
 }
 
 @test "init produces a curator-runnable vault (curate --check passes)" {
@@ -172,14 +188,16 @@ teardown() {
 }
 
 @test "init produces a vault that audit-coverage understands (covered_count >= 1)" {
-  # Sample article cites the seeded archive entry; covered_count must reflect.
+  # Sample article cites the seeded archive entry; covered_count must
+  # reflect. The inbox example is a dotfile and audit-coverage's find
+  # has an explicit dotfile guard, so a fresh vault has no silent drops.
   "$KUNSKAP_BIN" init "$TMPTARGET"
   run "$KUNSKAP_BIN" audit-coverage --vault "$TMPTARGET" --format json
-  # Exits 2 because raw/inbox/example-*.md is a "silent drop" until the user
-  # runs the curator — that's correct behaviour, not an init bug.
-  [[ "$status" -eq 2 ]]
+  [[ "$status" -eq 0 ]]
   cov=$(echo "$output" | jq '.covered_count')
   [[ "$cov" -ge 1 ]]
+  drops=$(echo "$output" | jq '.silent_drops | length')
+  [[ "$drops" -eq 0 ]]
 }
 
 @test "init config get shared returns true for --shared vault" {

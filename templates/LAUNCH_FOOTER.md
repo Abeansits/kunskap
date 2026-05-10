@@ -23,20 +23,32 @@ Fallback if the slash command is unavailable: `grep -ri <keyword> <vault>/wiki/`
 
 Before declaring the task done, write a learning or idea file to the inbox.
 
-**Write a new file** to `<vault>/raw/inbox/` named `{type}-{short-slug}-{date}.md` where type is `learning`, `idea`, or `improvement`. The PostToolUse hook will commit + push it asynchronously.
+**Write a new file** to `<vault>/raw/inbox/` named `{type}-{short-slug}-{date}.md` where type is `learning`, `idea`, or `improvement`.
+
+What happens after the write depends on the vault's `shared` flag in `_meta/kunskap.toml`:
+
+- **Shared vault** (`shared = true`): the PostToolUse hook commits + pushes the inbox write asynchronously. `/kunskap:sync` (or `kunskap sync`) is the manual fallback when the hook is wedged or you want explicit confirmation.
+- **Solo vault** (`shared = false`): the hook leaves the capture uncommitted in your working tree by design (Risk #8 — solo vaults never auto-commit or push). The hook prints a one-line stderr signal so you know it fired and decided to no-op. Commit yourself (`cd <vault> && git add raw/inbox && git commit`) when you want to. Flip `shared = true` in `_meta/kunskap.toml` to enable auto-sync.
 
 ### Source field — priority order
 
-Pick the best reference; thread > PR > branch.
+Pick a reference your readers can resolve. Two regimes:
 
-1. **Thread path** (full conversation context):
-   `thread: ~/.claude/projects/<path>/<session-id>`
-2. **PR link**:
-   `pr: https://github.com/<org>/<repo>/pull/<n>`
-3. **Remote branch**:
-   `branch: origin/<branch-name>`
+**Shared vaults (multiplayer)** — readers are on different machines, so
+the reference must resolve anywhere:
 
-Always include your session name too.
+1. **PR link**: `pr: https://github.com/<org>/<repo>/pull/<n>`
+2. **Remote branch**: `branch: origin/<branch-name>`
+3. **Issue / doc URL**: any public link teammates can open
+4. _(optional bonus)_ `thread: ~/.claude/projects/<path>/<session-id>` —
+   resolves only on the writer's box; useful for self-reference, not
+   for teammates. Add **after** a team-resolvable ref, never instead.
+
+**Solo vaults** — your machine, your refs. `thread:` is fine to lead
+with; PR / branch only matter once the work leaves your laptop.
+
+Always include your `session:` slug in frontmatter — it pairs with the
+source for auditability across both regimes.
 
 ### Entry format — learnings
 

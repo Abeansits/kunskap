@@ -106,3 +106,50 @@ EOF
   [[ "$status" -ne 0 ]]
   [[ "$output" == *"exactly one"* ]]
 }
+
+# ---------- identity-overwrite guard ----------
+
+@test "config user writes silently when no existing identity (first-run path)" {
+  run "$KUNSKAP_BIN" config user --name first --host runner
+  [[ "$status" -eq 0 ]]
+  [[ "$output" == *"identity written"* ]]
+  run "$KUNSKAP_BIN" whoami
+  [[ "$status" -eq 0 ]]
+  [[ "$output" == "first@runner" ]]
+}
+
+@test "config user writes silently when existing identity matches the new one" {
+  "$KUNSKAP_BIN" config user --name same --host runner >/dev/null
+  # Re-running with the same identity must not require --yes; setup
+  # re-runs and CI would otherwise need a flag they shouldn't.
+  run "$KUNSKAP_BIN" config user --name same --host runner
+  [[ "$status" -eq 0 ]]
+  [[ "$output" != *"replacing identity"* ]]
+}
+
+@test "config user refuses to overwrite an existing different identity without --yes" {
+  "$KUNSKAP_BIN" config user --name old --host runner >/dev/null
+  run "$KUNSKAP_BIN" config user --name new --host runner
+  [[ "$status" -ne 0 ]]
+  [[ "$output" == *"identity already set to old@runner"* ]]
+  [[ "$output" == *"--yes to confirm"* ]]
+  run "$KUNSKAP_BIN" whoami
+  [[ "$output" == "old@runner" ]]
+}
+
+@test "config user --yes overwrites the existing identity and prints replacement" {
+  "$KUNSKAP_BIN" config user --name old --host runner >/dev/null
+  run "$KUNSKAP_BIN" config user --name new --host runner --yes
+  [[ "$status" -eq 0 ]]
+  [[ "$output" == *"replacing identity old@runner → new@runner"* ]]
+  run "$KUNSKAP_BIN" whoami
+  [[ "$output" == "new@runner" ]]
+}
+
+@test "config user honors KUNSKAP_AUTO_CONFIRM=1 (Risk #7 pattern)" {
+  "$KUNSKAP_BIN" config user --name old --host runner >/dev/null
+  KUNSKAP_AUTO_CONFIRM=1 run "$KUNSKAP_BIN" config user --name new --host runner
+  [[ "$status" -eq 0 ]]
+  run "$KUNSKAP_BIN" whoami
+  [[ "$output" == "new@runner" ]]
+}

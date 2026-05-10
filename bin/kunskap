@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="1.2.2"
+VERSION="1.2.3"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/kunskap"
 IDENTITY_FILE="$CONFIG_DIR/identity.toml"
 
@@ -287,12 +287,13 @@ require_value() {
 }
 
 cmd_config_user() {
-  local name="" email="" host=""
+  local name="" email="" host="" yes=false
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --name)  require_value --name  "${2-__MISSING__}"; name="$2";  shift 2 ;;
       --email) require_value --email "${2-__MISSING__}"; email="$2"; shift 2 ;;
       --host)  require_value --host  "${2-__MISSING__}"; host="$2";  shift 2 ;;
+      --yes|-y) yes=true; shift ;;
       *) die "unknown flag for \`config user\`: $1" ;;
     esac
   done
@@ -305,6 +306,20 @@ cmd_config_user() {
   if [[ -z "$host" ]]; then
     host="$(hostname -s)"
     echo "kunskap: host derived from \`hostname -s\` ($host); explicit --host recommended for stable role-checks (see Risk #5)." >&2
+  fi
+
+  # Refuse to silently overwrite a different existing identity (Risk #7,
+  # matches cmd_setup). Without this guard, an unisolated `config user`
+  # invocation can stomp the user's real identity from a sibling test or
+  # script and the change is invisible until the next setup.
+  local existing_identity=""
+  existing_identity="$(compute_identity_string 2>/dev/null || true)"
+  local new_identity="$name@$host"
+  if [[ -n "$existing_identity" && "$existing_identity" != "$new_identity" ]]; then
+    if ! $yes && [[ "${KUNSKAP_AUTO_CONFIRM:-}" != "1" ]]; then
+      die "config user: identity already set to $existing_identity; --name/--host would overwrite to $new_identity (pass --yes to confirm)"
+    fi
+    echo "kunskap: config user: replacing identity $existing_identity → $new_identity" >&2
   fi
 
   write_identity "$name" "$email" "$host"
@@ -414,19 +429,13 @@ sha256_hex() {
 }
 
 # Render the body that gets injected between BEGIN/END markers (after the
-# hash line). Concatenates templates/LAUNCH_FOOTER.md and the Recall
-# addendum. Hashed for tamper detection at disable time.
+# hash line). Hashed for tamper detection at disable time. The recall
+# guidance lives once, in templates/LAUNCH_FOOTER.md's Pre-flight section.
 render_claudemd_body() {
   local template
   template="$(plugin_root)/templates/LAUNCH_FOOTER.md"
   [[ -f "$template" ]] || die "learn enable: missing $template (plugin install incomplete?)"
   cat "$template"
-  cat <<'EOF'
-
-## Recall
-
-At task start (before writing code or making a plan), your first action is to run `/kunskap:recall <keywords>` against the goal — pick 2–3 keywords from the user's request — and briefly note the top 1–3 relevant hits before proceeding. If nothing relevant comes back, say "recall: no prior art" and proceed. Skip only when the task is trivial (greetings, time queries, single-line tweaks).
-EOF
 }
 
 # Echo a path to a temp file containing the full managed block (BEGIN +
@@ -1198,8 +1207,12 @@ cmd_audit_coverage() {
       collect_sources(vault "/raw/inbox",                "raw/inbox")
       collect_sources(vault "/Archives/processed-inbox", "Archives/processed-inbox")
 
-      # 2. Collect every sources: entry from every wiki article.
-      cmd = "find \"" vault "/wiki\" -type f -name \"*.md\" 2>/dev/null"
+      # 2. Collect every sources: entry from every wiki article. Skip
+      # dotfiles to match bash `*.md` glob semantics the curator agent
+      # uses — BSD find on macOS matches dotfiles against `*.md` by
+      # default (POSIX fnmatch w/o FNM_PERIOD), so the guard is needed
+      # for the seeded `.example.md` to stay invisible cross-platform.
+      cmd = "find \"" vault "/wiki\" -type f -name \"*.md\" -not -name \".*\" 2>/dev/null"
       while ((cmd | getline f) > 0) parse_sources(f)
       close(cmd)
 
@@ -1230,7 +1243,9 @@ cmd_audit_coverage() {
       if (n_drop > 0 || n_broken > 0) exit 2
     }
     function collect_sources(dir, prefix,    cmd, line, base, rel) {
-      cmd = "find \"" dir "\" -type f -name \"*.md\" 2>/dev/null"
+      # Same dotfile guard as above: BSD find matches `.example.md`
+      # against `*.md` without an explicit -not -name ".*".
+      cmd = "find \"" dir "\" -type f -name \"*.md\" -not -name \".*\" 2>/dev/null"
       while ((cmd | getline line) > 0) {
         base = line
         sub(/.*\//, "", base)
@@ -1299,7 +1314,11 @@ substitute_template() {
 
 write_sample_notes() {
   local abs="$1" created="$2"
-  cat > "$abs/raw/inbox/example-${created}.md" <<EOF
+  # Dotfile name keeps this invisible to curator/linter/recall — they
+  # all consume `*.md` via shell globs (or the audit-coverage find with
+  # an explicit dotfile guard), so the seed never gets picked up as a
+  # real capture.
+  cat > "$abs/raw/inbox/.example.md" <<EOF
 ---
 type: learning
 session: example
@@ -1309,11 +1328,13 @@ sources:
   - thread: ~/.claude/projects/example
 ---
 
-# Example inbox note
+# Example inbox note (hidden reference)
 
-This is the shape that sessions write to \`raw/inbox/\`. The curator compiles
-notes like this into wiki articles. Replace this file with your own captures
-and run \`/kunskap:curate\` to see it process.
+This file is the format Claude Code sessions write to \`raw/inbox/\`. It
+lives as a dotfile so the curator and linter skip it; remove it freely
+once you've seen the shape, or leave it as a reference. Real captures
+use a non-dotfile name like \`learning-<slug>-<YYYY-MM-DD>.md\` and the
+curator routes them into wiki articles on the next \`/kunskap:curate\`.
 EOF
 
   cat > "$abs/Archives/processed-inbox/example-baseline-${created}.md" <<EOF
@@ -2327,7 +2348,9 @@ cmd_setup() {
       echo "kunskap: setup: overwriting identity $existing_identity → $identity" >&2
     fi
     echo "kunskap: setup [1/4] writing identity $identity"
-    cmd_config_user --name "$name" --host "$host"
+    # cmd_setup already enforced its own override check; --yes prevents
+    # cmd_config_user's matching guard from double-prompting.
+    cmd_config_user --name "$name" --host "$host" --yes
   else
     [[ -n "$existing_identity" ]] || die "setup: no identity set; pass --name <slug> --host <host>, or run \`kunskap config user\` first"
     identity="$existing_identity"

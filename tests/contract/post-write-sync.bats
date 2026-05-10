@@ -106,7 +106,9 @@ run_hook() {
   [[ -z "$output" ]]
 }
 
-@test "post-write-sync: solo vault (shared=false) → exit 0 quiet" {
+@test "post-write-sync: solo vault (shared=false) → exit 0 + observability stderr" {
+  # Solo no-op is by design (Risk #8); the stderr line is what
+  # distinguishes "hook fired and skipped" from "hook never registered".
   vault="$(mktemp -d -t kunskap-vault.XXXXXX)"
   mkdir -p "$vault/_meta" "$vault/raw/inbox"
   cat > "$vault/_meta/kunskap.toml" <<EOF
@@ -120,8 +122,11 @@ EOF
   payload="$(jq -n --arg p "$vault/raw/inbox/note.md" '{tool_input:{file_path:$p}}')"
   run run_hook "$payload"
   [[ "$status" -eq 0 ]]
-  [[ -z "$output" ]]
-  # No commit on solo vaults.
+  # Stderr explains the no-op + how to flip to shared.
+  [[ "$output" == *"vault is solo"* ]]
+  [[ "$output" == *"shared = false"* ]]
+  [[ "$output" == *"shared = true"* ]]
+  # Still no commit on solo vaults — observability message doesn't change behavior.
   ! ( cd "$vault" && git log --oneline 2>/dev/null | grep -q "inbox capture" )
   rm -rf "$vault"
 }

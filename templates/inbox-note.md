@@ -20,14 +20,16 @@ Save as `<vault>/raw/inbox/{type}-{short-slug}-{YYYY-MM-DD}.md`. Type is one of 
 
 ## Source field — priority order
 
-Pick the best reference; thread > PR > branch.
+Pick a reference your readers can resolve. Which regime applies depends on the vault's `shared` flag in `_meta/kunskap.toml`.
 
-1. **Thread path** (full conversation context):
-   `thread: ~/.claude/projects/<path>/<session-id>`
-2. **PR link**:
-   `pr: https://github.com/<org>/<repo>/pull/<n>`
-3. **Remote branch**:
-   `branch: origin/<branch-name>`
+**Shared vaults (multiplayer)** — teammates read on different machines, so the reference must resolve anywhere:
+
+1. **PR link**: `pr: https://github.com/<org>/<repo>/pull/<n>`
+2. **Remote branch**: `branch: origin/<branch-name>`
+3. **Issue / doc URL**: any public link teammates can open
+4. _(optional bonus)_ `thread: ~/.claude/projects/<path>/<session-id>` — resolves only on the writer's box; useful for self-reference, not for teammates. Add **after** a team-resolvable ref, never instead.
+
+**Solo vaults** — your machine, your refs. `thread:` is fine to lead with; PR / branch only matter once the work leaves your laptop.
 
 Always include your `session:` slug in frontmatter — it pairs with the source for auditability.
 
@@ -77,6 +79,7 @@ type: idea
 session: kunskap-v1.1-recall-design
 created: 2026-05-06
 sources:
+  - branch: origin/feat/v1.1-capture-recall
   - thread: ~/.claude/projects/kunskap-v1.1/2026-05-06-design.jsonl
 ---
 
