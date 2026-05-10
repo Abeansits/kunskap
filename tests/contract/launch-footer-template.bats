@@ -48,14 +48,11 @@ TEMPLATE="$REPO_ROOT/templates/LAUNCH_FOOTER.md"
   [[ -z "$(tail -c1 "$TEMPLATE")" ]]
 }
 
-@test "LAUNCH_FOOTER source-field guidance distinguishes shared vs solo vaults (v1.2.3)" {
-  # Sebastian 2026-05-10: thread paths only resolve on the writer's machine,
-  # so shared vaults must lead with team-resolvable refs (PR / branch /
-  # issue URL). Lock this contract in so no future doc sweep collapses
-  # back to the old "thread > PR > branch" priority.
+@test "LAUNCH_FOOTER source-field guidance distinguishes shared vs solo vaults" {
+  # thread: paths only resolve on the writer's machine, so shared vaults
+  # must lead with team-resolvable refs. Locks the regime split against
+  # a future doc sweep that collapses back to a single priority list.
   grep -Fiq 'shared vaults' "$TEMPLATE"
   grep -Fiq 'solo vaults' "$TEMPLATE"
-  # PR must appear in the shared-vault list as the lead option; if this
-  # changes the source-field guidance probably regressed.
   grep -Fq 'pr: https://github.com/' "$TEMPLATE"
 }

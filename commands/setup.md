@@ -109,7 +109,7 @@ I just need:
 Identity-resolution rules:
 - **"keep" / "no" / Enter / "ok" / blank** → reuse existing identity. Compose `kunskap setup --vault <vault> [--init] [--multiplayer] --yes` (no `--name`/`--host`; the CLI reuses what's on disk).
 - **"change" / "yes"** → ask Branch A's identity question (same `whoami` + `hostname -s` defaults), then compose `kunskap setup --name <slug> --host <host> --vault <vault> [--init] [--multiplayer] --yes`. The `--yes` is required here because the CLI refuses to overwrite an existing identity without it. (Both "change" and "yes" map to the same path — the prompt uses "Change?" so users naturally answer either.)
-- **"cancel" / "stop" / "abort"** → stop immediately, print "cancelled — no changes made", and don't run any kunskap command. v1.2.3 surfaced this option explicitly because users finding an unfamiliar pre-existing identity (e.g. a stale `smoke@runner` left over from earlier testing) need a clean exit, not a forced choice between keep/change.
+- **"cancel" / "stop" / "abort"** → stop immediately, print "cancelled — no changes made", and don't run any kunskap command. Users seeing an unfamiliar existing identity need a clean exit, not a forced choice between keep/change.
 - **Anything else** → reprint once with the same options. After two unrecognized replies, default to "keep" and explicitly say so before continuing.
 
 **Stay neutral about the existing identity.** Surface it factually — slug, host, when it was written — and let the user decide. Don't editorialize ("looks like a smoke-test default", "looks like the right defaults") even if a heuristic would suggest it; that's the user's call, not yours. The age hint (mtime) is enough signal for them to remember whether it's still right.

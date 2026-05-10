@@ -106,11 +106,9 @@ run_hook() {
   [[ -z "$output" ]]
 }
 
-@test "post-write-sync: solo vault (shared=false) → exit 0 + observability stderr (v1.2.3)" {
-  # v1.2.3: silent no-op was indistinguishable from "hook never fired"
-  # (Sebastian's 2026-05-10 finding). Hook still no-ops by design on
-  # solo vaults, but now emits one stderr line per capture so the user
-  # has a signal + the path to flip to shared=true.
+@test "post-write-sync: solo vault (shared=false) → exit 0 + observability stderr" {
+  # Solo no-op is by design (Risk #8); the stderr line is what
+  # distinguishes "hook fired and skipped" from "hook never registered".
   vault="$(mktemp -d -t kunskap-vault.XXXXXX)"
   mkdir -p "$vault/_meta" "$vault/raw/inbox"
   cat > "$vault/_meta/kunskap.toml" <<EOF

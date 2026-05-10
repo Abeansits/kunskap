@@ -150,10 +150,9 @@ teardown() {
 
 @test "init seeds neutral sample inbox + wiki + archive notes" {
   "$KUNSKAP_BIN" init "$TMPTARGET"
-  # v1.2.3: inbox example is a dotfile so curator/linter/recall skip it
-  # (they all glob `*.md`). It's still on disk as a format reference.
+  # Inbox example is a dotfile so curator/linter/recall skip it (they
+  # all glob `*.md`); it stays on disk as a format reference.
   [[ -f "$TMPTARGET/raw/inbox/.example.md" ]]
-  # And no non-dotfile example slipped into the inbox alongside it.
   inbox_visible=$(find "$TMPTARGET/raw/inbox" -name 'example-*.md' | wc -l | tr -d ' ')
   [[ "$inbox_visible" -eq 0 ]]
   wiki_count=$(find "$TMPTARGET/wiki/learnings" -name 'example-topic.md' | wc -l | tr -d ' ')
@@ -166,19 +165,15 @@ teardown() {
 }
 
 @test "init's inbox example is invisible to curator/linter/audit-coverage *.md globs" {
-  # v1.2.3 contract: the format-reference dotfile must not show up as a
-  # capture-shaped match for any of the *.md scans the agents + audit
-  # tooling rely on. If this regresses, the example will start polluting
-  # curator runs (Sebastian's 2026-05-10 fresh-install finding).
   "$KUNSKAP_BIN" init "$TMPTARGET"
   # Bash glob (curator/linter agents use this — `ls raw/inbox/*.md`).
   shopt -s nullglob
   matches=( "$TMPTARGET"/raw/inbox/*.md )
   shopt -u nullglob
   [[ ${#matches[@]} -eq 0 ]]
-  # find with explicit dotfile exclusion (audit-coverage uses this so it
-  # behaves the same on BSD find / macOS, which would otherwise match
-  # `.example.md` against `*.md` — POSIX fnmatch w/o FNM_PERIOD).
+  # find with explicit dotfile exclusion (audit-coverage uses this so
+  # BSD find / macOS — which would otherwise match `.example.md` against
+  # `*.md` (POSIX fnmatch w/o FNM_PERIOD) — behaves the same as bash.
   found=$(find "$TMPTARGET/raw/inbox" -type f -name '*.md' -not -name '.*' | wc -l | tr -d ' ')
   [[ "$found" -eq 0 ]]
 }
@@ -193,12 +188,11 @@ teardown() {
 }
 
 @test "init produces a vault that audit-coverage understands (covered_count >= 1)" {
-  # Sample article cites the seeded archive entry; covered_count must reflect.
+  # Sample article cites the seeded archive entry; covered_count must
+  # reflect. The inbox example is a dotfile and audit-coverage's find
+  # has an explicit dotfile guard, so a fresh vault has no silent drops.
   "$KUNSKAP_BIN" init "$TMPTARGET"
   run "$KUNSKAP_BIN" audit-coverage --vault "$TMPTARGET" --format json
-  # v1.2.3: inbox example is now a dotfile, so audit-coverage's
-  # `find -name "*.md"` no longer treats it as a silent drop. Fresh
-  # vault is clean (exit 0) with the archived baseline still cited.
   [[ "$status" -eq 0 ]]
   cov=$(echo "$output" | jq '.covered_count')
   [[ "$cov" -ge 1 ]]

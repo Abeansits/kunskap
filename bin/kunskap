@@ -308,14 +308,10 @@ cmd_config_user() {
     echo "kunskap: host derived from \`hostname -s\` ($host); explicit --host recommended for stable role-checks (see Risk #5)." >&2
   fi
 
-  # v1.2.3: refuse to silently overwrite an existing different identity.
-  # Sebastian's 2026-05-10 fresh-install walkthrough surfaced this: the
-  # v1.1 smoke harness ran `kunskap config user --name smoke --host runner`
-  # without isolating XDG, planting `smoke@runner` in the user's real
-  # ~/.config/kunskap/identity.toml — invisible until the next /kunskap:setup
-  # picked it up days later as a "phantom identity". Match cmd_setup's
-  # Risk #7 pattern: die without --yes / KUNSKAP_AUTO_CONFIRM=1 when the
-  # write would replace a different existing identity.
+  # Refuse to silently overwrite a different existing identity (Risk #7,
+  # matches cmd_setup). Without this guard, an unisolated `config user`
+  # invocation can stomp the user's real identity from a sibling test or
+  # script and the change is invisible until the next setup.
   local existing_identity=""
   existing_identity="$(compute_identity_string 2>/dev/null || true)"
   local new_identity="$name@$host"
@@ -1211,11 +1207,11 @@ cmd_audit_coverage() {
       collect_sources(vault "/raw/inbox",                "raw/inbox")
       collect_sources(vault "/Archives/processed-inbox", "Archives/processed-inbox")
 
-      # 2. Collect every sources: entry from every wiki article. Exclude
-      # dotfiles so the seeded `.example.md` reference (and any other
-      # hidden file) is invisible — matches bash `*.md` glob semantics
-      # the curator agent uses, which BSD find -name "*.md" does not
-      # honor by default (POSIX fnmatch w/o FNM_PERIOD).
+      # 2. Collect every sources: entry from every wiki article. Skip
+      # dotfiles to match bash `*.md` glob semantics the curator agent
+      # uses — BSD find on macOS matches dotfiles against `*.md` by
+      # default (POSIX fnmatch w/o FNM_PERIOD), so the guard is needed
+      # for the seeded `.example.md` to stay invisible cross-platform.
       cmd = "find \"" vault "/wiki\" -type f -name \"*.md\" -not -name \".*\" 2>/dev/null"
       while ((cmd | getline f) > 0) parse_sources(f)
       close(cmd)
@@ -1247,8 +1243,8 @@ cmd_audit_coverage() {
       if (n_drop > 0 || n_broken > 0) exit 2
     }
     function collect_sources(dir, prefix,    cmd, line, base, rel) {
-      # `-not -name ".*"` keeps `.example.md` (the seeded format
-      # reference) invisible across BSD/GNU find. See note above.
+      # Same dotfile guard as above: BSD find matches `.example.md`
+      # against `*.md` without an explicit -not -name ".*".
       cmd = "find \"" dir "\" -type f -name \"*.md\" -not -name \".*\" 2>/dev/null"
       while ((cmd | getline line) > 0) {
         base = line
@@ -1318,9 +1314,10 @@ substitute_template() {
 
 write_sample_notes() {
   local abs="$1" created="$2"
-  # Hidden dotfile: curator/linter/recall/audit-coverage all glob `*.md`
-  # which excludes leading-dot names, so this stays a permanent format
-  # reference without ever being picked up as a real capture.
+  # Dotfile name keeps this invisible to curator/linter/recall — they
+  # all consume `*.md` via shell globs (or the audit-coverage find with
+  # an explicit dotfile guard), so the seed never gets picked up as a
+  # real capture.
   cat > "$abs/raw/inbox/.example.md" <<EOF
 ---
 type: learning
@@ -2351,8 +2348,8 @@ cmd_setup() {
       echo "kunskap: setup: overwriting identity $existing_identity → $identity" >&2
     fi
     echo "kunskap: setup [1/4] writing identity $identity"
-    # cmd_setup has already enforced its own override check above; pass --yes
-    # so cmd_config_user (v1.2.3 override guard) doesn't double-prompt.
+    # cmd_setup already enforced its own override check; --yes prevents
+    # cmd_config_user's matching guard from double-prompting.
     cmd_config_user --name "$name" --host "$host" --yes
   else
     [[ -n "$existing_identity" ]] || die "setup: no identity set; pass --name <slug> --host <host>, or run \`kunskap config user\` first"
