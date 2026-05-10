@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.2.2 — 2026-05-10 — contract job split + panel-content e2e smoke
+
+- **Failure isolation restored.** `ci.yml`'s monolithic `contract` job is split into a per-suite `bats` matrix (`fail-fast: false`) plus a slimmed `contract` job for the non-bats surface (agent / command / hooks / template / plugin.json shape, end-to-end flows, drift lints, fingerprint detector). A flake in one bats file no longer blocks the others; re-runs scope to the failed slot only. TAP-line coverage parity verified pre/post: the two new panel-content cases land on top of the v1.2.1 baseline (was 437-case monolithic; now 439-case across the matrix). Closes the v1.1.1-deferred matrix-split item.
+- **Panel-content e2e smoke.** New `tests/contract/panel-content.bats` (2-case file) exercises a single end-to-end flow — `kunskap init` → `kunskap config user` → `kunskap learn enable` → `kunskap learn status` — and asserts one stable phrase from each user-visible panel: the v1.1.1 `single-primary contract` framing on the init next-steps panel, and the all-TBD `ROLE-CHECK: no primary configured` copy on `learn status`. Distinct from the existing init-cli + learn-cli unit-style assertions: this is the only test that exercises the init template's TBD scaffold all the way through to the user-visible status output, catching wiring drift the unit suites can't see. Closes the v1.1.1-deferred panel-content e2e item.
+- `bin/kunskap version` bumps to `1.2.2`. Plugin manifest version bumps to `1.2.2`.
+
 ## v1.2.1 — 2026-05-07 — wire orphan bats files into CI
 
 - **Coverage gap closed.** Four bats files added in v1.1.0 — `sync-cli.bats`, `post-write-sync.bats`, `learn-enable-claudemd.bats`, `launch-footer-template.bats` — were never referenced from any `pN.yml` and slipped through v1.1.1's CI consolidation. Local `bats tests/contract/` ran them; CI didn't. Now wired into `ci.yml` (paired by feature: sync CLI + post-write-sync hook, then learn-enable + LAUNCH_FOOTER template — placed between the P6 recall step and the v1.2 setup steps). Local and CI suite counts now match; the previously-ungated 45-case coverage gap is closed. Pure CI hygiene — no behavioral changes to `bin/kunskap`, hooks, slash commands, or templates.

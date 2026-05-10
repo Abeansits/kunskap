@@ -1,15 +1,17 @@
 name: CI
 
-# Consolidated v1.1.1: replaces the seven phase-named workflows
-# (p0.yml..p6.yml) shipped during the P0–P6 chain. Every job, step,
-# bats suite, e2e, drift-lint, and fingerprint check from the prior
-# workflows is reproduced below — losing one would silently weaken CI
-# coverage on future PRs. Surfaces grouped into three jobs:
+# Consolidated v1.1.1; v1.2.2 split the bats suites out of `contract`
+# into a per-file matrix job for failure isolation. Surfaces grouped
+# into four jobs:
 #
 #   manifest   — fast manifest + CLI argparse contracts (P0 surface)
 #   shellcheck — bin/kunskap + every hook script (cumulative)
-#   contract   — bats suites, agent/command/template shape, e2e flows,
-#                drift lints, static-prompt fingerprint collision detector
+#   bats       — every tests/contract/*.bats file as one matrix slot
+#                (fail-fast: false — a flake in one suite no longer
+#                blocks the others; re-runs scope to the failed slot)
+#   contract   — agent/command/template/hooks/plugin.json shape checks,
+#                end-to-end flows, drift lints, static-prompt fingerprint
+#                collision detector
 
 on:
   push:
@@ -155,18 +157,65 @@ jobs:
           shellcheck hooks/_shared.sh
 
   # ------------------------------------------------------------------
-  # contract — every bats suite, every e2e, every agent/command/
-  # template shape check, every drift lint, the static-prompt
-  # fingerprint substring-collision detector. The heavy job — runs
-  # in parallel with manifest + shellcheck.
+  # bats — v1.2.2 split. Each tests/contract/*.bats file runs in its
+  # own matrix slot. fail-fast: false is load-bearing: the whole point
+  # is that a flake in one suite no longer kills the rest, and re-runs
+  # scope to the failed slot. The list is enumerated (rather than glob)
+  # so a missing entry is visible in PR diff — the v1.2.1 orphan-bats
+  # learning is a live concern. v1.3+ Suggestion [Cleanup]: replace
+  # with dynamic discovery once the orphan-prevention story is owned.
+  # ------------------------------------------------------------------
+  bats:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        suite:
+          - behavioral
+          - cli-surface
+          - config-cli
+          - drafts-cli
+          - hooks-smoke
+          - init-cli
+          - last-run-cli
+          - launch-footer-template
+          - learn-cli
+          - learn-enable-claudemd
+          - lint-cli
+          - linter-behavioral
+          - linter-static-prompt
+          - panel-content
+          - post-write-sync
+          - recall-cli
+          - role-cli
+          - setup-cli
+          - setup-slash
+          - static-prompt
+          - sync-cli
+          - toml-fuzz
+          - two-machine
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install bats + jq + ripgrep
+        run: sudo apt-get update -qq && sudo apt-get install -y bats jq ripgrep
+
+      - name: bats ${{ matrix.suite }}
+        run: bats tests/contract/${{ matrix.suite }}.bats
+
+  # ------------------------------------------------------------------
+  # contract — every agent/command/template/hooks/plugin.json shape
+  # check, every e2e flow, every drift lint, the static-prompt
+  # fingerprint substring-collision detector. The non-bats "everything
+  # else" surface; bats suites live in the `bats` matrix job above.
   # ------------------------------------------------------------------
   contract:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: install bats + jq + ripgrep
-        run: sudo apt-get update -qq && sudo apt-get install -y bats jq ripgrep
+      - name: install jq + ripgrep
+        run: sudo apt-get update -qq && sudo apt-get install -y jq ripgrep
 
       # ---------- bin/kunskap surface health (cumulative help advert) ----------
 
@@ -391,81 +440,20 @@ jobs:
             grep -q '^views:' "$f"
           done
 
-      # ---------- bats suites (counts derived dynamically — no drifty strings) ----------
-      # P1 §7: dynamic counts; never encoded in step names.
-
+      # ---------- bats coverage cross-reference (informational) ----------
+      # The 23 tests/contract/*.bats files run in parallel slots in the
+      # `bats` matrix job above. This step prints per-file case counts
+      # so a regression in any matrix slot is easy to triage from a
+      # single contract-job log section. v1.3+ Suggestion [Cleanup]:
+      # add a structural drift-lint here that asserts the matrix list
+      # and the on-disk glob agree (closes the v1.2.1 orphan-bats class
+      # once and for all).
       - name: list test counts
         run: |
           for f in tests/contract/*.bats; do
             n=$(grep -c '^@test ' "$f")
             printf '  %-35s %d cases\n' "$(basename "$f")" "$n"
           done
-
-      - name: bats — static prompt-contract (P1)
-        run: bats tests/contract/static-prompt.bats
-
-      - name: bats — CLI surface (P1)
-        run: bats tests/contract/cli-surface.bats
-
-      - name: bats — behavioral suite (skipped without KUNSKAP_LIVE_TESTS=1)
-        run: bats tests/contract/behavioral.bats
-
-      - name: bats — learn CLI surface (P2)
-        run: bats tests/contract/learn-cli.bats
-
-      - name: bats — config get + global --vault (P2)
-        run: bats tests/contract/config-cli.bats
-
-      - name: bats — hooks fail-soft smoke (P2)
-        run: bats tests/contract/hooks-smoke.bats
-
-      - name: bats — init CLI surface (P3)
-        run: bats tests/contract/init-cli.bats
-
-      - name: bats — drafts CLI surface (P3)
-        run: bats tests/contract/drafts-cli.bats
-
-      - name: bats — linter static prompt-contract (P4)
-        run: bats tests/contract/linter-static-prompt.bats
-
-      - name: bats — lint CLI surface (P4)
-        run: bats tests/contract/lint-cli.bats
-
-      - name: bats — linter behavioral (skipped without KUNSKAP_LIVE_TESTS=1)
-        run: bats tests/contract/linter-behavioral.bats
-
-      - name: bats — role check CLI (P5)
-        run: bats tests/contract/role-cli.bats
-
-      - name: bats — two-machine identity simulation (P5)
-        run: bats tests/contract/two-machine.bats
-
-      - name: bats — last-run/<role>.json whitelist source surface (P5)
-        run: bats tests/contract/last-run-cli.bats
-
-      - name: bats — TOML constrained-subset fuzz (P5)
-        run: bats tests/contract/toml-fuzz.bats
-
-      - name: bats — recall CLI (P6)
-        run: bats tests/contract/recall-cli.bats
-
-      - name: bats — sync CLI surface (v1.1)
-        run: bats tests/contract/sync-cli.bats
-
-      - name: bats — post-write-sync hook fail-soft (v1.1)
-        run: bats tests/contract/post-write-sync.bats
-
-      - name: bats — learn enable / disable CLAUDE.md inject (v1.1)
-        run: bats tests/contract/learn-enable-claudemd.bats
-
-      - name: bats — LAUNCH_FOOTER template shape (v1.1)
-        run: bats tests/contract/launch-footer-template.bats
-
-      - name: bats — setup CLI surface (v1.2)
-        run: bats tests/contract/setup-cli.bats
-
-      - name: bats — setup slash command shape (v1.2)
-        run: bats tests/contract/setup-slash.bats
 
       # ---------- end-to-end flows ----------
 
