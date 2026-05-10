@@ -150,9 +150,12 @@ teardown() {
 
 @test "init seeds neutral sample inbox + wiki + archive notes" {
   "$KUNSKAP_BIN" init "$TMPTARGET"
-  # Use the literal "example" prefix — neutral, no domain leak (Risk #7).
-  inbox_count=$(find "$TMPTARGET/raw/inbox" -name 'example-*.md' | wc -l | tr -d ' ')
-  [[ "$inbox_count" -ge 1 ]]
+  # v1.2.3: inbox example is a dotfile so curator/linter/recall skip it
+  # (they all glob `*.md`). It's still on disk as a format reference.
+  [[ -f "$TMPTARGET/raw/inbox/.example.md" ]]
+  # And no non-dotfile example slipped into the inbox alongside it.
+  inbox_visible=$(find "$TMPTARGET/raw/inbox" -name 'example-*.md' | wc -l | tr -d ' ')
+  [[ "$inbox_visible" -eq 0 ]]
   wiki_count=$(find "$TMPTARGET/wiki/learnings" -name 'example-topic.md' | wc -l | tr -d ' ')
   [[ "$wiki_count" -eq 1 ]]
   archive_count=$(find "$TMPTARGET/Archives/processed-inbox" -name 'example-baseline-*.md' | wc -l | tr -d ' ')
@@ -160,6 +163,24 @@ teardown() {
   # Sample article body must NOT mention specific research domains (e.g.
   # hyperspectral). Reject the leak class explicitly.
   ! grep -qi 'hyperspectral\|kunskap-research' "$TMPTARGET/wiki/learnings/example-topic.md"
+}
+
+@test "init's inbox example is invisible to curator/linter/audit-coverage *.md globs" {
+  # v1.2.3 contract: the format-reference dotfile must not show up as a
+  # capture-shaped match for any of the *.md scans the agents + audit
+  # tooling rely on. If this regresses, the example will start polluting
+  # curator runs (Sebastian's 2026-05-10 fresh-install finding).
+  "$KUNSKAP_BIN" init "$TMPTARGET"
+  # Bash glob (curator/linter agents use this — `ls raw/inbox/*.md`).
+  shopt -s nullglob
+  matches=( "$TMPTARGET"/raw/inbox/*.md )
+  shopt -u nullglob
+  [[ ${#matches[@]} -eq 0 ]]
+  # find with explicit dotfile exclusion (audit-coverage uses this so it
+  # behaves the same on BSD find / macOS, which would otherwise match
+  # `.example.md` against `*.md` — POSIX fnmatch w/o FNM_PERIOD).
+  found=$(find "$TMPTARGET/raw/inbox" -type f -name '*.md' -not -name '.*' | wc -l | tr -d ' ')
+  [[ "$found" -eq 0 ]]
 }
 
 @test "init produces a curator-runnable vault (curate --check passes)" {
@@ -175,11 +196,14 @@ teardown() {
   # Sample article cites the seeded archive entry; covered_count must reflect.
   "$KUNSKAP_BIN" init "$TMPTARGET"
   run "$KUNSKAP_BIN" audit-coverage --vault "$TMPTARGET" --format json
-  # Exits 2 because raw/inbox/example-*.md is a "silent drop" until the user
-  # runs the curator — that's correct behaviour, not an init bug.
-  [[ "$status" -eq 2 ]]
+  # v1.2.3: inbox example is now a dotfile, so audit-coverage's
+  # `find -name "*.md"` no longer treats it as a silent drop. Fresh
+  # vault is clean (exit 0) with the archived baseline still cited.
+  [[ "$status" -eq 0 ]]
   cov=$(echo "$output" | jq '.covered_count')
   [[ "$cov" -ge 1 ]]
+  drops=$(echo "$output" | jq '.silent_drops | length')
+  [[ "$drops" -eq 0 ]]
 }
 
 @test "init config get shared returns true for --shared vault" {

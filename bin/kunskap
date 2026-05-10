@@ -1192,8 +1192,12 @@ cmd_audit_coverage() {
       collect_sources(vault "/raw/inbox",                "raw/inbox")
       collect_sources(vault "/Archives/processed-inbox", "Archives/processed-inbox")
 
-      # 2. Collect every sources: entry from every wiki article.
-      cmd = "find \"" vault "/wiki\" -type f -name \"*.md\" 2>/dev/null"
+      # 2. Collect every sources: entry from every wiki article. Exclude
+      # dotfiles so the seeded `.example.md` reference (and any other
+      # hidden file) is invisible — matches bash `*.md` glob semantics
+      # the curator agent uses, which BSD find -name "*.md" does not
+      # honor by default (POSIX fnmatch w/o FNM_PERIOD).
+      cmd = "find \"" vault "/wiki\" -type f -name \"*.md\" -not -name \".*\" 2>/dev/null"
       while ((cmd | getline f) > 0) parse_sources(f)
       close(cmd)
 
@@ -1224,7 +1228,9 @@ cmd_audit_coverage() {
       if (n_drop > 0 || n_broken > 0) exit 2
     }
     function collect_sources(dir, prefix,    cmd, line, base, rel) {
-      cmd = "find \"" dir "\" -type f -name \"*.md\" 2>/dev/null"
+      # `-not -name ".*"` keeps `.example.md` (the seeded format
+      # reference) invisible across BSD/GNU find. See note above.
+      cmd = "find \"" dir "\" -type f -name \"*.md\" -not -name \".*\" 2>/dev/null"
       while ((cmd | getline line) > 0) {
         base = line
         sub(/.*\//, "", base)
@@ -1293,7 +1299,10 @@ substitute_template() {
 
 write_sample_notes() {
   local abs="$1" created="$2"
-  cat > "$abs/raw/inbox/example-${created}.md" <<EOF
+  # Hidden dotfile: curator/linter/recall/audit-coverage all glob `*.md`
+  # which excludes leading-dot names, so this stays a permanent format
+  # reference without ever being picked up as a real capture.
+  cat > "$abs/raw/inbox/.example.md" <<EOF
 ---
 type: learning
 session: example
@@ -1303,11 +1312,13 @@ sources:
   - thread: ~/.claude/projects/example
 ---
 
-# Example inbox note
+# Example inbox note (hidden reference)
 
-This is the shape that sessions write to \`raw/inbox/\`. The curator compiles
-notes like this into wiki articles. Replace this file with your own captures
-and run \`/kunskap:curate\` to see it process.
+This file is the format Claude Code sessions write to \`raw/inbox/\`. It
+lives as a dotfile so the curator and linter skip it; remove it freely
+once you've seen the shape, or leave it as a reference. Real captures
+use a non-dotfile name like \`learning-<slug>-<YYYY-MM-DD>.md\` and the
+curator routes them into wiki articles on the next \`/kunskap:curate\`.
 EOF
 
   cat > "$abs/Archives/processed-inbox/example-baseline-${created}.md" <<EOF
